@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      # Before the build: the build copies public/ (the models with it) into dist/, which
+      # the browser tests serve.
+      - name: Fetch the face and hand models (for the camera tests)
+        run: npm run fetch:models
+      - run: npm run build
+      - name: Install headless Chromium
+        run: npx playwright-core install --with-deps chromium
+      - run: npx vitest run --project browser

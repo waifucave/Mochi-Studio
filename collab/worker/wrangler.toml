@@ -1,0 +1,48 @@
+# The collaboration signaling server as a Cloudflare Worker
+# (docs/collaboration.md, "Run it on Cloudflare").
+#
+# No hostname is written here. The deploy workflow (.github/workflows/
+# collab-deploy.yml) adds the route from the repository variable
+# COLLAB_HOST, as a custom domain; by hand, pass a config with a [[routes]]
+# entry of your own, or add one below in your copy.
+#
+# Secrets, set once with `wrangler secret put` (never in this file):
+#   TURN_KEY_ID          the TURN key's id, from Cloudflare's dashboard
+#   TURN_KEY_API_TOKEN   the TURN key's API token
+name = "mochi-collab"
+main = "index.ts"
+compatibility_date = "2026-07-01"
+
+# Only the custom domain serves it: no workers.dev address, no preview URLs.
+workers_dev = false
+preview_urls = false
+
+# No logs: Workers Logs off (new Workers have it on by default), no Logpush.
+logpush = false
+[observability]
+enabled = false
+
+# One Durable Object per room; one per (hashed) address for the limits; one
+# for the counts /health gives. SQLite-backed, as the free plan requires.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomObject"
+
+[[durable_objects.bindings]]
+name = "ADDRESSES"
+class_name = "AddressObject"
+
+[[durable_objects.bindings]]
+name = "COUNTS"
+class_name = "CountsObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomObject", "AddressObject", "CountsObject"]
+
+# The defaults are those of src/core/collab/limits.ts; uncomment to change.
+[vars]
+# LIMIT_CONNECTIONS_PER_ADDRESS = "20"
+# LIMIT_ROOMS_PER_ADDRESS = "6"
+# LIMIT_NEW_CONNECTIONS_PER_MINUTE = "60"
+# TURN_TTL = "46800"

@@ -1,0 +1,66 @@
+# Deploys the collaboration signaling server to Cloudflare as a Worker
+# (collab/worker/; docs/collaboration.md, "Run it on Cloudflare"). Started by
+# hand only (Actions → Deploy the signaling Worker → Run workflow).
+#
+# Needs, under Settings → Secrets and variables → Actions:
+#   secrets   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+#   variable  COLLAB_HOST, the hostname it answers on (e.g. collab.example.com),
+#             on a domain in the same Cloudflare account
+# The TURN key is a Worker secret, set once with `wrangler secret put`, not here.
+name: Deploy the signaling Worker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collab-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      COLLAB_HOST: ${{ vars.COLLAB_HOST }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - name: Check the secrets and the hostname
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN (a secret)"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID (a secret)"
+          [ -n "$COLLAB_HOST" ] || missing="$missing COLLAB_HOST (a variable)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing:$missing. Add them under Settings → Secrets and variables → Actions, then run this again."
+            exit 1
+          fi
+          if ! printf '%s' "$COLLAB_HOST" | grep -Eq '^([a-z0-9-]+\.)+[a-z]{2,}$'; then
+            echo "::error::COLLAB_HOST must be a hostname only, such as collab.example.com (no https://, no path)."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: The protocol tests, against the Worker under Miniflare
+        run: npx vitest run --project unit test/unit/signaling.test.ts
+      - name: The deploy config, with the route as a custom domain
+        run: |
+          cp collab/worker/wrangler.toml collab/worker/wrangler.deploy.toml
+          printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$COLLAB_HOST" >> collab/worker/wrangler.deploy.toml
+      - name: Deploy
+        run: npx --yes wrangler@4.156.2 deploy --config collab/worker/wrangler.deploy.toml
+      - name: Check that it answers (counts only)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS "https://$COLLAB_HOST/health"; then echo; exit 0; fi
+            sleep 10
+          done
+          echo "::error::https://$COLLAB_HOST/health did not answer. A new custom domain can take a few minutes; run the check again later."
+          exit 1

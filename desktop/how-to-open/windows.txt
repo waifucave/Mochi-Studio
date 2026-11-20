@@ -1,0 +1,19 @@
+Mochi Studio for Windows: how to open it
+========================================
+
+This build is not signed. Windows warns about apps it does not know; the
+warning does not mean anything harmful was found.
+
+1. Unzip "Mochi Studio-<version>-win.zip" into a folder of your own
+   (for example Documents\Mochi Studio). Do not run it from inside the zip.
+2. Run "Mochi Studio.exe".
+3. If "Windows protected your PC" (SmartScreen) appears: click "More info",
+   then "Run anyway". Windows remembers this for this copy.
+4. If Windows Firewall asks: Mochi Studio only listens on this computer
+   (127.0.0.1), for OBS. You can choose "Cancel"; OBS on the same computer
+   still works.
+
+Camera or microphone not working? Settings > Privacy & security > Camera
+(and Microphone): turn on "Let desktop apps access your camera".
+
+More: docs/desktop.md and docs/user-guide.md in the source repository.

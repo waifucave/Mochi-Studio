@@ -1,0 +1,13 @@
+{
+  "extends": "../bridge/tsconfig.json",
+  "compilerOptions": {
+    "resolveJsonModule": true
+  },
+  "include": [
+    "main.ts",
+    "preload.ts",
+    "recent.ts",
+    "../bridge/src",
+    "../src/core/bridgeProtocol.ts"
+  ]
+}

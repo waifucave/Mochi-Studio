@@ -1,0 +1,142 @@
+# Builds the unsigned desktop packages on Linux, Windows and macOS, as
+# workflow artifacts, and runs the Spout2 and virtual camera tests. Started
+# by hand (Actions → Desktop packages → Run workflow) or by a version tag,
+# never by an ordinary push: macOS runners cost the most minutes. It
+# publishes no release.
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            files: |
+              desktop/dist/release/*.AppImage
+              desktop/dist/release/HOW-TO-OPEN.txt
+          - os: windows-latest
+            name: windows
+            files: |
+              desktop/dist/release/*.zip
+              desktop/dist/release/HOW-TO-OPEN.txt
+          - os: macos-latest
+            name: macos
+            files: |
+              desktop/dist/release/*.zip
+              desktop/dist/release/HOW-TO-OPEN.txt
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # With install scripts: Electron's binary comes from its postinstall.
+      - run: npm ci
+      - name: Fetch the face and hand models (bundled with the pages)
+        run: npm run fetch:models
+      - run: npm run typecheck
+      # Spout2 output: the sender addon, Windows only.
+      - name: Fetch the Spout2 SDK and build the Spout2 addon
+        if: matrix.name == 'windows'
+        run: |
+          npm run fetch:spout
+          npm run build:spout
+      # The virtual camera: its Linux module.
+      - name: Build the virtual camera module
+        if: matrix.name == 'linux'
+        run: npm run build:v4l2
+      - name: Build the packages (unsigned)
+        run: npm run desktop:package
+        env:
+          # No signing, and no auto-discovery of signing identities.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Add the how-to-open note (what the unsigned-app warnings mean)
+        shell: bash
+        run: cp "desktop/how-to-open/${{ matrix.name }}.txt" desktop/dist/release/HOW-TO-OPEN.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mochi-studio-${{ matrix.name }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # Spout2 output: builds the addon and runs the Spout2 test, in
+  # which a Spout2 receiver reads the app's senders back, and measures the
+  # cost of both frame paths (test-results/spout-cost.json).
+  spout:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run fetch:spout
+      - run: npm run build:spout
+      - run: npm run desktop:build
+      - name: Spout2 test
+        run: npx vitest run --project browser test/browser/spout.test.ts
+        env:
+          MOCHI_SPOUT_TEST: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spout-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The virtual camera on Linux: loads v4l2loopback with the
+  # camera's name, then runs the camera test with the fake device and with
+  # the real one, which ffmpeg reads as a camera app would. When the module
+  # can't load on the runner's kernel, the real-device test is skipped and
+  # says why; the step below writes what happened to the job summary.
+  vcam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # One package at a time: a name missing on this kernel (the runners'
+      # Azure kernels have no linux-modules-extra) must not stop the rest.
+      # DKMS builds the module against the running kernel's headers.
+      - name: Install v4l2loopback, ffmpeg and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg xvfb
+          sudo apt-get install -y "linux-headers-$(uname -r)" || echo "No headers package for $(uname -r)."
+          sudo apt-get install -y v4l2loopback-dkms || echo "v4l2loopback-dkms did not install."
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || echo "No linux-modules-extra for $(uname -r) (not needed with DKMS)."
+      - name: Load v4l2loopback as Mochi Studio Camera
+        run: |
+          if sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Mochi Studio Camera" exclusive_caps=1; then
+            sudo chmod 666 /dev/video10
+            echo "v4l2loopback loaded: $(cat /sys/class/video4linux/video10/name)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "v4l2loopback did not load on kernel $(uname -r): the real-device test is skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - run: npm ci
+      - run: npm run build:v4l2
+      - run: npm run build
+      - run: npm run desktop:build
+      - name: The native conversion against the reference
+        run: npx vitest run --project unit src/core/virtualCamera.test.ts
+      - name: The virtual camera, with the fake device and the real one
+        run: xvfb-run -a npx vitest run --project browser test/browser/vcam.test.ts
+        env:
+          MOCHI_DESKTOP_TEST: '1'
+          MOCHI_VCAM_TEST: '1'

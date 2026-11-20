@@ -1,0 +1,18 @@
+# Mochi Studio
+
+> Mochi Studio is an open-source live-avatar app for models made with Live2D Cubism, built on the Mochi2D runtime. It runs in a browser (and as an OBS Browser Source). AI agents control the avatar through a local bridge: an MCP server (`mochi-studio-bridge mcp`) and a WebSocket API, with the same commands the app's own buttons use.
+
+Key facts for agents:
+
+- Connect through MCP: `node /path/to/mochi-studio/bridge/bin.mjs mcp`, with the environment variable `MOCHI_STUDIO_TOKEN` set to a token the person created in Mochi Studio's Agents tab. The person must turn on agent access and pair the page with the bridge first.
+- Start with `get_state` and `describe_model`. Use `screenshot` to see the avatar (a PNG image).
+- Common commands: `set_expression`, `play_motion` (mode `once` or `hold`), `set_parameters` (values that win over face tracking, optional `ttl_seconds`), `set_item`, `set_background`, `set_transform`, `speak` (base64 audio, moves the mouth), `fire_hotkey`, `undo`.
+- Errors come back with a message that says what to do; read it.
+- Scopes: `read`, `control`, `screenshot`. Tools outside the token's scopes are not offered.
+- Camera and microphone data are never available, and agents cannot turn the camera or microphone on.
+
+## Docs
+
+- [Agent API](docs/agent-api.md): setup for MCP clients, every command and event, safety, and the bridge protocol.
+- [User guide](docs/user-guide.md): the app itself, including OBS setup.
+- [README](README.md): overview and development.

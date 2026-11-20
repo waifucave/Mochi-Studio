@@ -1,0 +1,48 @@
+{
+  "appId": "org.mochistudio.desktop",
+  "productName": "Mochi Studio",
+  "directories": {
+    "app": "dist/app",
+    "output": "dist/release"
+  },
+  "files": [
+    "main.cjs",
+    "preload.cjs",
+    "package.json",
+    "web/**/*",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "native/**/*",
+    "!node_modules/**"
+  ],
+  "npmRebuild": false,
+  "nodeGypRebuild": false,
+  "asar": true,
+  "publish": null,
+  "linux": {
+    "target": ["dir", "AppImage"],
+    "category": "Video"
+  },
+  "win": {
+    "target": ["zip"]
+  },
+  "mac": {
+    "target": ["zip"],
+    "identity": null,
+    "extendInfo": {
+      "NSCameraUsageDescription": "Mochi Studio uses the camera to track your face. Video stays on this computer.",
+      "NSMicrophoneUsageDescription": "Mochi Studio uses the microphone for lip sync. Audio stays on this computer."
+    }
+  },
+  "asarUnpack": ["native/**"],
+  "extraFiles": [
+    {
+      "from": "dist/app/LICENSE",
+      "to": "LICENSE.mochi-studio.txt"
+    },
+    {
+      "from": "dist/app/THIRD_PARTY_NOTICES.md",
+      "to": "THIRD_PARTY_NOTICES.md"
+    }
+  ]
+}

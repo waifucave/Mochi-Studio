@@ -1,0 +1,21 @@
+Mochi Studio for macOS: how to open it
+======================================
+
+This build is not signed or notarized. macOS (Gatekeeper) blocks apps from
+unidentified developers the first time; the warning does not mean anything
+harmful was found.
+
+1. Unzip "Mochi Studio-<version>-mac.zip" and move "Mochi Studio" to the
+   Applications folder.
+2. Right-click (or Control-click) the app and choose "Open", then "Open"
+   again in the dialog. You only need to do this once.
+   - On macOS 15 and later, if there is no "Open" button: try to open the
+     app once, then go to System Settings > Privacy & Security, scroll down
+     and click "Open Anyway" next to Mochi Studio.
+   - Or, in Terminal:
+       xattr -dr com.apple.quarantine "/Applications/Mochi Studio.app"
+3. The first time you start the camera or microphone, macOS asks for
+   access: choose "Allow". To change it later: System Settings > Privacy &
+   Security > Camera (or Microphone).
+
+More: docs/desktop.md and docs/user-guide.md in the source repository.

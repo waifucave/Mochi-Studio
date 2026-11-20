@@ -1,0 +1,958 @@
+[
+  {
+    "name": "get_state",
+    "summary": "The current state: model, camera and microphone status, expressions, items, stage and history.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "describe_model",
+    "summary": "The loaded model: parameters (ids, names, ranges, defaults), expressions, motions, items, hotkeys and tracking inputs.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_parameters",
+    "summary": "Parameter ranges and defaults, and the values agents have set (overrides). Tracked values are not readable.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 100 },
+          "maxItems": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_mapping",
+    "summary": "The tracking mapping rules (tracking input → model parameter).",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_hotkeys",
+    "summary": "The model’s hotkeys and what they do.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_items",
+    "summary": "The items (props) of the loaded model, with visibility, placement and pin.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_log",
+    "summary": "The latest commands run (by the UI, agents and replays), oldest first.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_commands",
+    "summary": "Every command with its scope and argument schema.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "load_model",
+    "summary": "Loads a model from a URL of a .model3.json file or a .zip (the page fetches it).",
+    "details": "Local folders cannot be opened by an agent: the browser only reads files the user picks.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "http(s) URL of a .model3.json or .zip."
+        }
+      },
+      "required": ["url"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "unload_model",
+    "summary": "Removes the model from the stage.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_parameters",
+    "summary": "Sets parameter values that win over tracking, until cleared or until ttl_seconds pass.",
+    "details": "Values are kept within each parameter’s range by the renderer. Unknown ids are listed in unknown.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "values": {
+          "type": "object",
+          "additionalProperties": { "type": "number" },
+          "description": "Parameter id → value."
+        },
+        "ttl_seconds": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 3600,
+          "description": "Clear these values after this many seconds."
+        }
+      },
+      "required": ["values"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "clear_parameters",
+    "summary": "Removes parameter values set with set_parameters (all, or the ids given), so tracking drives them again.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 100 },
+          "maxItems": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_expression",
+    "summary": "Turns an expression on or off (by name, or by .exp3.json path).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "expression": { "type": "string", "maxLength": 300 },
+        "on": { "type": "boolean", "description": "Default true." }
+      },
+      "required": ["expression"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "clear_expressions",
+    "summary": "Turns every expression off.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "play_motion",
+    "summary": "Plays a motion once, or holds its last frame (hold again to release). Name it by group and index, or by name or file.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "group": { "type": "string", "maxLength": 200 },
+        "index": { "type": "integer", "minimum": 0 },
+        "name": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "The motion’s name or .motion3.json path, as describe_model lists it."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["once", "hold"],
+          "maxLength": 1000,
+          "description": "Default once."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "stop_motions",
+    "summary": "Stops the playing motion and releases a held one.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_item_scenes",
+    "summary": "The item scenes of the loaded model: id, name, group, their items, and whether each is on.",
+    "scope": "read",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_item_scene",
+    "summary": "Turns an item scene on (its items show where the scene has them; the other scenes of its group turn off) or off.",
+    "details": "The scene by id or name. fade: seconds the items take to fade in or out.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scene": { "type": "string", "maxLength": 100 },
+        "on": {
+          "type": "boolean",
+          "description": "Default: the opposite of now."
+        },
+        "fade": { "type": "number", "minimum": 0, "maximum": 10 }
+      },
+      "required": ["scene"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_item_scene",
+    "summary": "Makes an item scene from items as they are placed now: by default every item shown now.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "group": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Turning one scene of a group on turns the group’s others off."
+        },
+        "items": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 100 },
+          "maxItems": 500
+        }
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "remove_item_scene",
+    "summary": "Removes an item scene (by id or name); its items stay as they are.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "scene": { "type": "string", "maxLength": 100 } },
+      "required": ["scene"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_item",
+    "summary": "Shows or hides an item, places it (main-model units, degrees), puts it in front or behind, or pins it.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 50 },
+        "visible": { "type": "boolean" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "scale": { "type": "number", "minimum": 0.01, "maximum": 100 },
+        "rotation": { "type": "number" },
+        "front": { "type": "boolean" },
+        "pinned": {
+          "type": "boolean",
+          "description": "Pin to the part of the model under the item’s anchor."
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "fire_hotkey",
+    "summary": "Fires a hotkey as if its keys were pressed. For \"while held\" hotkeys, call release_hotkey to let go.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "id": { "type": "string", "maxLength": 50 } },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "release_hotkey",
+    "summary": "Releases a \"while held\" hotkey fired with fire_hotkey.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "id": { "type": "string", "maxLength": 50 } },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_mapping",
+    "summary": "Replaces the tracking mapping rules (tracking input → model parameter, with ranges, invert, clamp and smoothing).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "maxLength": 50 },
+              "input": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "A tracking input id (see describe_model.inputs) or bs.<blendshape>."
+              },
+              "output": {
+                "type": "string",
+                "maxLength": 100,
+                "description": "A model parameter id."
+              },
+              "enabled": { "type": "boolean" },
+              "inMin": { "type": "number" },
+              "inMax": { "type": "number" },
+              "outMin": { "type": "number" },
+              "outMax": { "type": "number" },
+              "invert": { "type": "boolean" },
+              "clamp": { "type": "boolean" },
+              "smoothing": { "type": "number", "minimum": 0, "maximum": 1 },
+              "followPhysics": {
+                "type": "boolean",
+                "description": "When physics overwrites the output, write its driver instead (default true)."
+              },
+              "smoother": {
+                "type": "string",
+                "enum": ["exponential", "rate"],
+                "maxLength": 1000,
+                "description": "How smoothing works: \"rate\" (a rate limit, rising faster than falling) or \"exponential\". Default: rate for the voice inputs, exponential for the rest."
+              }
+            },
+            "required": ["input", "output"],
+            "additionalProperties": false
+          },
+          "maxItems": 500
+        },
+        "mirror": { "type": "boolean" }
+      },
+      "required": ["rules"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "update_mapping_rule",
+    "summary": "Changes some fields of one mapping rule (by id; get_mapping lists them).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 50 },
+        "input": { "type": "string", "maxLength": 200 },
+        "output": { "type": "string", "maxLength": 100 },
+        "enabled": { "type": "boolean" },
+        "inMin": { "type": "number" },
+        "inMax": { "type": "number" },
+        "outMin": { "type": "number" },
+        "outMax": { "type": "number" },
+        "invert": { "type": "boolean" },
+        "clamp": { "type": "boolean" },
+        "smoothing": { "type": "number", "minimum": 0, "maximum": 1 },
+        "followPhysics": { "type": "boolean" },
+        "smoother": {
+          "type": "string",
+          "enum": ["exponential", "rate"],
+          "maxLength": 1000
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calibrate",
+    "summary": "Calibrates the neutral pose: the person looks straight ahead for about 4.5 s. Needs the camera on (or a phone tracking).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_lip_sync",
+    "summary": "How the microphone’s lip sync combines with the tracked mouth, its sensitivity and its noise gate.",
+    "details": "Modes: tracking (camera only), microphone, max, add, blend (weight 0 = camera, 1 = microphone).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["simple", "advanced"],
+          "maxLength": 1000,
+          "description": "simple: the volume opens the mouth; advanced: vowels too (motion sync)."
+        },
+        "motionSync": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Advanced: a setting of the model’s motion-sync file whose shapes move the mouth; empty for the vowel inputs only."
+        },
+        "voiceProcessing": {
+          "type": "boolean",
+          "description": "Advanced: the browser’s echo cancellation and noise suppression."
+        },
+        "vowelForm": {
+          "type": "boolean",
+          "description": "Advanced: the vowels shape the mouth form (I and E widen it, U and O round it)."
+        },
+        "frequencyWeights": {
+          "type": "object",
+          "properties": {
+            "A": { "type": "number", "minimum": -1, "maximum": 1 },
+            "I": { "type": "number", "minimum": -1, "maximum": 1 },
+            "U": { "type": "number", "minimum": -1, "maximum": 1 },
+            "E": { "type": "number", "minimum": -1, "maximum": 1 },
+            "O": { "type": "number", "minimum": -1, "maximum": 1 }
+          },
+          "additionalProperties": false,
+          "description": "Advanced: how much each vowel moves the VoiceFrequency input (an approximation), −1 to 1; it rests at 0.5. Missing vowels keep their weight."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["tracking", "microphone", "max", "add", "blend"],
+          "maxLength": 1000
+        },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "gain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Sensitivity; 1 is Mochi2D’s default."
+        },
+        "gate": {
+          "type": "number",
+          "minimum": -80,
+          "maximum": -10,
+          "description": "Noise gate in dBFS."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_background",
+    "summary": "Sets the background: transparent, chroma (key color), color, or image (a data: URL).",
+    "details": "Applies app-wide, or to the model when it has its own background (per_model).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["transparent", "chroma", "color", "image"],
+          "maxLength": 1000
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 7,
+          "description": "A color as #rrggbb."
+        },
+        "image": {
+          "type": "string",
+          "maxLength": 12000000,
+          "description": "data:image/png|jpeg|webp|gif;base64,…"
+        },
+        "fit": {
+          "type": "string",
+          "enum": ["cover", "contain"],
+          "maxLength": 1000
+        },
+        "per_model": {
+          "type": "boolean",
+          "description": "Give this model its own background and frame cap."
+        }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_transform",
+    "summary": "Places the model: x, y (canvas heights from the centre, y down), zoom (1 = fitted) and rotation (degrees, clockwise).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "number", "minimum": -10, "maximum": 10 },
+        "y": { "type": "number", "minimum": -10, "maximum": 10 },
+        "zoom": { "type": "number", "minimum": 0.1, "maximum": 10 },
+        "rotation": { "type": "number", "minimum": -180, "maximum": 180 }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_frame_cap",
+    "summary": "Caps the frame rate (0 = uncapped).",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fps": { "type": "integer", "minimum": 0, "maximum": 240 }
+      },
+      "required": ["fps"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_spout",
+    "summary": "Spout2 output in the desktop app on Windows: up to four outputs, each sent as MochiStudio, MochiStudio2, …",
+    "details": "Each output is on or off, can be mirrored, and has the stage size unless width and height are given (16 to 7680). get_state shows each sender.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "mirror": { "type": "boolean" },
+              "width": { "type": "integer", "minimum": 16, "maximum": 7680 },
+              "height": { "type": "integer", "minimum": 16, "maximum": 7680 }
+            },
+            "required": ["enabled"],
+            "additionalProperties": false
+          },
+          "maxItems": 4
+        }
+      },
+      "required": ["outputs"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_virtual_camera",
+    "summary": "The virtual camera in the desktop app (Linux for now): the avatar as a camera named \"Mochi Studio Camera\" that other apps open.",
+    "details": "Fields left out keep their value. Sizes: 1280×720, 1920×1080, 960×540; rates: 30 or 60. The background is \"stage\" (the stage's own) or a #rrggbb color under the avatar (video apps show no transparency). Mirror is off by default: call apps mirror only the person's own preview. get_state.virtualCamera shows the device and what to install when it is missing.",
+    "scope": "control",
+    "undoable": true,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "width": { "type": "integer", "minimum": 960, "maximum": 1920 },
+        "height": { "type": "integer", "minimum": 540, "maximum": 1080 },
+        "fps": { "type": "integer", "minimum": 30, "maximum": 60 },
+        "mirror": { "type": "boolean" },
+        "background": {
+          "type": "string",
+          "maxLength": 7,
+          "description": "\"stage\", or a color as #rrggbb."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_host",
+    "summary": "Opens a collaboration session with the app’s Collab settings, and returns the invitation link and its code.",
+    "details": "The link and the code (the same invitation, to read aloud) are private: share them only with the people you invite. They are never in get_state. With a password, people also need it to ask to join; it never leaves this app. People who ask appear in get_state.collab.knocks; let them in with collab_answer.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "password": { "type": "string", "maxLength": 200 } },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_join",
+    "summary": "Asks to join a collaboration session from its invitation link or code.",
+    "details": "A code uses the app’s Signaling server setting. The host decides; get_state.collab.status is \"waiting\" until then, then \"member\", or \"ended\" with a message.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "The invitation link, or its code."
+        },
+        "password": { "type": "string", "maxLength": 200 }
+      },
+      "required": ["link"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_new_link",
+    "summary": "The host makes a new invitation: the old link and code stop working; people already in stay.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_chat",
+    "summary": "Sends a chat message to everyone in the session (text only, at most 500 characters).",
+    "details": "At most 5 messages in 10 seconds. get_state.collab.chat has the last 50; nothing is kept after the session.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "text": { "type": "string", "maxLength": 500 } },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_leave",
+    "summary": "Leaves the session (the host ends it for everyone).",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_answer",
+    "summary": "The host lets someone in who asked to join, or declines.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A participant’s id (or nickname), from get_state.collab."
+        },
+        "admit": { "type": "boolean" }
+      },
+      "required": ["peer", "admit"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_remove",
+    "summary": "The host removes a participant; their app can’t ask again in this session.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A participant’s id (or nickname), from get_state.collab."
+        }
+      },
+      "required": ["peer"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_lock",
+    "summary": "The host locks the session (no one else can ask to join), or opens it again.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": { "locked": { "type": "boolean" } },
+      "required": ["locked"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_hide",
+    "summary": "Hides a participant’s avatar on this screen (and its output views) only, or shows it again.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A participant’s id (or nickname), from get_state.collab."
+        },
+        "hidden": { "type": "boolean" }
+      },
+      "required": ["peer", "hidden"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_place",
+    "summary": "Places a participant’s avatar on this screen by hand: it stays where it is (or where it is dragged) instead of where they stand, and with pinned, follows this app’s model.",
+    "details": "Only on this screen and its output views. here: false puts it back where they stand.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A participant’s id (or nickname), from get_state.collab."
+        },
+        "here": { "type": "boolean" },
+        "pinned": { "type": "boolean" }
+      },
+      "required": ["peer", "here"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_order",
+    "summary": "Sets this screen’s own front-to-back order of everyone (ids or nicknames, back first), or with none, the shared order again.",
+    "details": "Only on this screen and its output views; people left out keep the shared order, in front.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A participant’s id (or nickname), from get_state.collab."
+          },
+          "maxItems": 6
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collab_block",
+    "summary": "Blocks a participant on this screen: hidden, and what they send (expressions, motions) is ignored. They aren’t told.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "A participant’s id (or nickname), from get_state.collab."
+        },
+        "blocked": { "type": "boolean" }
+      },
+      "required": ["peer", "blocked"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "speak",
+    "summary": "Plays a sound (WAV, MP3, Ogg…, base64) and moves the mouth with it. Resolves when it ends.",
+    "details": "Text-to-speech is not built in: send the audio of your own speech. At most 10 MB.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "audio": {
+          "type": "string",
+          "maxLength": 14000000,
+          "description": "The audio file, base64."
+        },
+        "volume": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "required": ["audio"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "screenshot",
+    "summary": "A PNG of the avatar as it is now, with a transparent background.",
+    "scope": "screenshot",
+    "undoable": false,
+    "readOnly": true,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "undo",
+    "summary": "Undoes the latest change of settings, expressions or parameter values.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "redo",
+    "summary": "Runs the latest undone command again.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "replay_log",
+    "summary": "Runs logged commands again, in order (control commands only), as get_log returns them.",
+    "scope": "control",
+    "undoable": false,
+    "readOnly": false,
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "maxLength": 100 },
+              "args": {},
+              "time": { "type": "number" },
+              "ok": { "type": "boolean" },
+              "seq": { "type": "number" },
+              "origin": {},
+              "error": {}
+            },
+            "required": ["name"],
+            "additionalProperties": false
+          },
+          "maxItems": 1000
+        },
+        "keep_timing": {
+          "type": "boolean",
+          "description": "Wait between commands as they were spaced (at most 5 s each)."
+        }
+      },
+      "required": ["entries"],
+      "additionalProperties": false
+    }
+  }
+]

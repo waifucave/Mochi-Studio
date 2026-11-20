@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+# Locally supplied models. Never commit model data (see CLEANROOM.md).
+assets/models/
+# Copied from node_modules / downloaded by scripts.
+public/mediapipe/
+*.log
+
+# The Spout2 SDK checkout and the addon build (npm run fetch:spout, npm run build:spout)
+native/spout/third_party/
+native/spout/build/
+native/v4l2/build/
+
+# The deploy workflow's config, with the route added (collab/worker/wrangler.toml).
+collab/worker/wrangler.deploy.toml
+.wrangler/
