@@ -15,3 +15,6 @@ native/v4l2/build/
 # The deploy workflow's config, with the route added (collab/worker/wrangler.toml).
 collab/worker/wrangler.deploy.toml
 .wrangler/
+native/maccam/.build/
+native/maccam/build/
+native/wincam/build/

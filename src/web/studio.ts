@@ -273,6 +273,14 @@ export class Studio implements StudioApi {
   private micStream: MediaStream | undefined;
   /** The microphone runs the advanced lipsync. */
   private micAdvanced = false;
+  /**
+   * Starting the microphone waits for the browser (getUserMedia) and the audio
+   * setup. Starts run one after another; a start overtaken by a later start or
+   * a stop (its generation is no longer the current one) removes what it opened
+   * instead of taking over.
+   */
+  private micGeneration = 0;
+  private micQueue: Promise<void> = Promise.resolve();
   /** The advanced lipsync: the stream it follows (opened here, or given), its analysis, its reading. */
   private voiceStream: MediaStream | undefined;
   private voiceStreamOwned = false;
@@ -713,7 +721,7 @@ export class Studio implements StudioApi {
       frames: 0,
       ...(st ?? {}),
       ...(!st?.problem && !this.virtualCameraSupported
-        ? { problem: 'The virtual camera is available in the desktop app (Linux for now).' }
+        ? { problem: 'The virtual camera is available in the desktop app.' }
         : {}),
       settings: structuredClone(this.app.virtualCamera),
     };
@@ -744,6 +752,26 @@ export class Studio implements StudioApi {
       clearInterval(this.cameraTimer);
       this.cameraTimer = undefined;
     }
+  }
+
+  /**
+   * Installs or removes the camera other apps list (Windows and macOS). A
+   * person's action: Windows asks for administrator rights, macOS for approval.
+   */
+  async installVirtualCamera(
+    action: 'install' | 'uninstall',
+    options?: { olderApps?: boolean },
+  ): Promise<VirtualCameraState | undefined> {
+    const api = desktopApi();
+    if (!api?.virtualCameraInstall) return undefined;
+    const busy = this.cameraLast?.install;
+    if (busy) this.gotCamera({ ...this.cameraLast!, install: { ...busy, busy: true } });
+    const st = await api.virtualCameraInstall(action, options);
+    if (st) this.gotCamera(st);
+    // The camera, if on, starts now that it is installed.
+    this.cameraApplied = '';
+    this.applyVirtualCamera();
+    return st ?? undefined;
   }
 
   async refreshVirtualCamera(): Promise<VirtualCameraState | undefined> {
@@ -1009,6 +1037,19 @@ export class Studio implements StudioApi {
    * Starting it while on switches the device.
    */
   async startMicrophone(deviceId?: string, opts: { stream?: MediaStream } = {}): Promise<void> {
+    const generation = ++this.micGeneration;
+    const run = this.micQueue.then(() => this.openMicrophone(deviceId, opts, generation));
+    this.micQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async openMicrophone(
+    deviceId: string | undefined,
+    opts: { stream?: MediaStream },
+    generation: number,
+  ): Promise<void> {
+    // Overtaken before it began: nothing to do.
+    if (generation !== this.micGeneration) return;
     const advanced = this.settings?.lipSync.type === 'advanced';
     if (
       this.mic &&
@@ -1024,11 +1065,23 @@ export class Studio implements StudioApi {
     } catch (e) {
       this.stopVoice();
       this.runtime.stopLipSync();
+      if (generation !== this.micGeneration) {
+        this.mic = false;
+        return;
+      }
       this.mic = false;
       this.micDevice = undefined;
       this.micStream = undefined;
       this.events.emit('microphoneChanged', { on: false });
       throw e;
+    }
+    // Overtaken while it opened (turned off, or started again): what it opened goes, and
+    // the microphone counts as off until the start that overtook it (if any) opens it.
+    if (generation !== this.micGeneration) {
+      this.stopVoice();
+      this.runtime.stopLipSync();
+      this.mic = false;
+      return;
     }
     this.mic = true;
     this.micDevice = deviceId;
@@ -1297,6 +1350,8 @@ export class Studio implements StudioApi {
   }
 
   stopMicrophone(): void {
+    // A start still opening is overtaken: it removes what it opens.
+    this.micGeneration++;
     this.stopVoice();
     this.runtime.stopLipSync();
     this.mic = false;
@@ -1310,6 +1365,11 @@ export class Studio implements StudioApi {
 
   get microphoneOn(): boolean {
     return !!this.mic;
+  }
+
+  /** The stream the advanced lipsync follows now (tests check which one it is). */
+  get voiceStreamInUse(): MediaStream | undefined {
+    return this.voiceStream;
   }
 
   private mergeSources(now: number): TrackingFrame {

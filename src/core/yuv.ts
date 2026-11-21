@@ -2,7 +2,8 @@
  * Frames for the virtual camera (docs/virtual-camera.md): Chromium's frames
  * (premultiplied BGRA) composited over a solid color, since video apps show
  * no transparency, and converted to YUYV (4:2:2), the format V4L2 apps
- * accept most widely.
+ * accept most widely, or NV12 (4:2:0), which Windows and macOS cameras offer
+ * first.
  *
  * BT.709, limited range (Y 16–235, Cb and Cr 16–240), as video apps expect
  * for HD. Each pair of pixels shares its Cb and Cr, from the pair's average.
@@ -78,17 +79,92 @@ export function premultipliedToYuyv(
   return out;
 }
 
-/** YUYV back to RGB (BT.709, limited range): for tests and checks of a received frame. */
-export function yuyvToRgb(yuyv: Uint8Array, width: number, x: number, y: number): number[] {
-  const pair = (y * width + (x & ~1)) * 2;
-  const Y = yuyv[pair + (x & 1) * 2]! - 16;
-  const U = yuyv[pair + 1]! - 128;
-  const V = yuyv[pair + 3]! - 128;
+/**
+ * Converts a premultiplied BGRA (or RGBA) frame to NV12 over `under`
+ * (0xRRGGBB): the Y plane (a byte a pixel), then the Cb and Cr plane at half
+ * width and half height, interleaved (Cb, Cr). Each 2 × 2 block shares its
+ * Cb and Cr, from the block's average. The format Windows and macOS cameras
+ * offer first. `width` and `height` must be even. Writes into `out` when
+ * given (1.5 bytes a pixel), and returns it.
+ */
+export function premultipliedToNv12(
+  src: Uint8Array,
+  width: number,
+  height: number,
+  under: number,
+  out: Uint8Array = new Uint8Array((width * height * 3) / 2),
+  order: 'bgra' | 'rgba' = 'bgra',
+): Uint8Array {
+  if (width % 2 || height % 2) throw new Error('The width and height must be even.');
+  if (src.length < width * height * 4) throw new Error('The frame is smaller than its size.');
+  const ur = (under >> 16) & 255;
+  const ug = (under >> 8) & 255;
+  const ub = under & 255;
+  const ri = order === 'bgra' ? 2 : 0;
+  const bi = order === 'bgra' ? 0 : 2;
+  const tr = new Int32Array(256);
+  const tg = new Int32Array(256);
+  const tb = new Int32Array(256);
+  for (let a = 0; a < 256; a++) {
+    tr[a] = Math.floor((ur * (255 - a) + 127) / 255);
+    tg[a] = Math.floor((ug * (255 - a) + 127) / 255);
+    tb[a] = Math.floor((ub * (255 - a) + 127) / 255);
+  }
+  const uv = width * height;
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      // The block's four pixels, over the color, and their sums.
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let k = 0; k < 4; k++) {
+        const px = (y + (k >> 1)) * width + x + (k & 1);
+        const i = px * 4;
+        const a = src[i + 3]!;
+        const pr = src[i + ri]! + tr[a]!;
+        const pg = src[i + 1]! + tg[a]!;
+        const pb = src[i + bi]! + tb[a]!;
+        out[px] = 16 + ((YR * pr + YG * pg + YB * pb + HALF) >> 16);
+        r += pr;
+        g += pg;
+        b += pb;
+      }
+      // Sums of four, quartered in the shift.
+      const o = uv + (y >> 1) * width + x;
+      out[o] = 128 + ((UR * r + UG * g + UB * b + (S << 1)) >> 18);
+      out[o + 1] = 128 + ((VR * r + VG * g + VB * b + (S << 1)) >> 18);
+    }
+  }
+  return out;
+}
+
+/** NV12 back to RGB (BT.709, limited range): for tests and checks of a received frame. */
+export function nv12ToRgb(
+  nv12: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+): number[] {
+  const o = width * height + (y >> 1) * width + (x & ~1);
+  return toRgb(nv12[y * width + x]!, nv12[o]!, nv12[o + 1]!);
+}
+
+function toRgb(y: number, u: number, v: number): number[] {
+  const Y = y - 16;
+  const U = u - 128;
+  const V = v - 128;
   const k = 255 / 219;
   const kc = 255 / 224;
   const r = k * Y + kc * 1.5748 * V;
   const g = k * Y - kc * ((0.2126 * 1.5748) / 0.7152) * V - kc * ((0.0722 * 1.8556) / 0.7152) * U;
   const b = k * Y + kc * 1.8556 * U;
-  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const c = (n: number) => Math.max(0, Math.min(255, Math.round(n)));
   return [c(r), c(g), c(b)];
+}
+
+/** YUYV back to RGB (BT.709, limited range): for tests and checks of a received frame. */
+export function yuyvToRgb(yuyv: Uint8Array, width: number, x: number, y: number): number[] {
+  const pair = (y * width + (x & ~1)) * 2;
+  return toRgb(yuyv[pair + (x & 1) * 2]!, yuyv[pair + 1]!, yuyv[pair + 3]!);
 }

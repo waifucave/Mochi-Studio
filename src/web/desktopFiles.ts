@@ -63,6 +63,11 @@ interface DesktopApi {
   /** The virtual camera: starts, changes or stops it; its state. */
   virtualCameraConfigure?(c: VirtualCameraConfig): Promise<VirtualCameraState | null>;
   virtualCameraState?(): Promise<VirtualCameraState | null>;
+  /** Windows and macOS: installs or removes the camera other apps list. */
+  virtualCameraInstall?(
+    action: 'install' | 'uninstall',
+    options?: { olderApps?: boolean },
+  ): Promise<VirtualCameraState | null>;
   /** Errors of the app's main process and its bridge, for the log. */
   onMainError?(fn: (text: string) => void): void;
 }

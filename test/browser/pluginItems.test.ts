@@ -456,6 +456,16 @@ describe('plugin items, images and geometry', () => {
       (await p1.request('ItemAnimationControlRequest', { itemInstanceID: id, frame: 3 })).data
         .errorID,
     ).toBe(854);
+    // The picture as it is stored (brightness redraws it, a moment after the answer).
+    const picture = (id: string) =>
+      page.evaluate(async (id) => {
+        const files = (await (window as any).mochiStudio.itemFilesOf(id)) as [string, Uint8Array][];
+        const tex = files.find(([p]) => p.endsWith('.png'))![1];
+        let h = 0;
+        for (const b of tex) h = (h * 31 + b) | 0;
+        return h;
+      }, id);
+    const before = await picture(id);
     const anim = await p1.request('ItemAnimationControlRequest', {
       itemInstanceID: id,
       opacity: 0.5,
@@ -463,6 +473,11 @@ describe('plugin items, images and geometry', () => {
     });
     expectEnvelope(anim, 'ItemAnimationControlResponse');
     expect(anim.data).toEqual({ frame: 0, animationPlaying: false });
+    expect(
+      await page.evaluate((id) => (window as any).mochiStudio.runtime.itemOpacity(id), id),
+    ).toBeCloseTo(0.5);
+    // Once redrawn darker, the picture keeps the opacity the same request set.
+    await expect.poll(() => picture(id)).not.toBe(before);
     expect(
       await page.evaluate((id) => (window as any).mochiStudio.runtime.itemOpacity(id), id),
     ).toBeCloseTo(0.5);

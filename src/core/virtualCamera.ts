@@ -1,7 +1,8 @@
 /**
  * The virtual camera (docs/virtual-camera.md): the
- * avatar as a camera other apps open, "Mochi Studio Camera". Linux first,
- * through a v4l2loopback device; Windows and macOS later.
+ * avatar as a camera other apps open, "Mochi Studio Camera": on Linux
+ * through a v4l2loopback device, on Windows through the app's own DirectShow
+ * camera (installed once), on macOS through a camera extension.
  *
  * Settings live app-wide (`AppSettings.virtualCamera`); the page turns them
  * into a configuration for the main process (`VirtualCameraConfig`), which
@@ -160,6 +161,32 @@ export interface VirtualCameraState {
   /** Frames written since it started. */
   frames: number;
   error?: string;
+  /**
+   * Windows and macOS: the camera other apps list is installed with the app's
+   * Install button (once, with the system's permission), and removed with
+   * Uninstall.
+   */
+  install?: CameraInstallState;
+}
+
+export interface CameraInstallState {
+  installed: boolean;
+  /** What Install asks for, and what is installed (shown under the buttons). */
+  detail?: string;
+  /** Installing or uninstalling now. */
+  busy?: boolean;
+  /** Why the last Install or Uninstall failed. */
+  error?: string;
+  /**
+   * Windows 11: whether the second, DirectShow camera is installed too, for
+   * apps that only use DirectShow (32-bit ones among them). Absent elsewhere.
+   */
+  olderApps?: boolean;
+}
+
+/** What Install is asked for (Windows 11: the DirectShow camera too). */
+export interface CameraInstallOptions {
+  olderApps?: boolean;
 }
 
 /** The line that creates the camera's device (docs/virtual-camera.md, Linux). */

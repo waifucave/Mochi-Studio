@@ -52,6 +52,14 @@ jobs:
         run: |
           npm run fetch:spout
           npm run build:spout
+      # The virtual camera on Windows: the module and the camera DLLs.
+      - name: Build the Windows virtual camera
+        if: matrix.name == 'windows'
+        run: npm run build:wincam
+      # The virtual camera on macOS: the helper and the Camera Extension, unsigned.
+      - name: Build the macOS virtual camera
+        if: matrix.name == 'macos'
+        run: npm run build:maccam
       # The virtual camera: its Linux module.
       - name: Build the virtual camera module
         if: matrix.name == 'linux'

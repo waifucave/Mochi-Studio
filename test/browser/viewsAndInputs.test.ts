@@ -65,17 +65,44 @@ describe('output views while the control window is out of sight', () => {
     expect(errors).toEqual([]);
   });
 
-  it('runs on animation frames alone while the control window is drawn', async () => {
+  it('runs on animation frames while the control window is drawn, the ticks only in their gaps', async () => {
     const fresh = await H.context.newPage();
     await fresh.goto(H.url);
     await fresh.waitForFunction(() => 'mochiStudio' in window);
     await fresh.bringToFront();
     // Before it came to the front it was out of sight: count from now.
     await fresh.waitForTimeout(300);
-    const before = await fresh.evaluate(() => (window as any).mochiStudio.backgroundFrames);
-    await fresh.waitForTimeout(1500);
-    // Drawn: the worker's ticks run no frames.
-    expect(await fresh.evaluate(() => (window as any).mochiStudio.backgroundFrames)).toBe(before);
+    // 1.5 s of the window's own animation frames, and the frames the ticks ran meanwhile.
+    const { gaps, ticked } = await fresh.evaluate(
+      () =>
+        new Promise<{ gaps: number[]; ticked: number }>((resolve) => {
+          const s = (window as any).mochiStudio;
+          const before = s.backgroundFrames as number;
+          const times: number[] = [];
+          const start = performance.now();
+          const step = (t: number) => {
+            times.push(t);
+            if (t - start < 1500) requestAnimationFrame(step);
+            else {
+              const gaps = times.slice(1).map((x, i) => x - times[i]!);
+              resolve({ gaps, ticked: s.backgroundFrames - before });
+            }
+          };
+          requestAnimationFrame(step);
+        }),
+    );
+    // The design (src/web/frameClock.ts): a tick runs a frame only once no animation frame
+    // came for 100 ms, about one per 33 ms tick after that. With frames every 16 ms, none;
+    // on a busy machine whose frames come late, the ticks fill those gaps, and only those.
+    const allowed = gaps
+      .filter((g) => g > 100)
+      .reduce((n, g) => n + Math.ceil((g - 100) / 33) + 1, 0);
+    const longest = Math.max(...gaps);
+    if (ticked > 0 || allowed > 0)
+      console.log(
+        `Animation frames: ${gaps.length} gaps, the longest ${longest.toFixed(0)} ms; ticks ran ${ticked} frames, ${allowed} allowed`,
+      );
+    expect(ticked).toBeLessThanOrEqual(allowed);
     await fresh.close();
   });
 });

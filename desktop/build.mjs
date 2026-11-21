@@ -54,6 +54,17 @@ if (existsSync(v4l2Addon)) {
   cpSync(v4l2Addon, join(out, 'native', 'mochi_v4l2.node'));
   console.log('With the virtual camera module.');
 }
+// The virtual camera's Windows parts, when they were built (npm run build:wincam): the module,
+// and the camera DLLs in native/x64/ and native/x86/ (unpacked: regsvr32 and other apps load them).
+const wincam = here('../native/wincam/build/Release/');
+if (existsSync(join(wincam, 'mochi_wincam.node'))) {
+  mkdirSync(join(out, 'native'), { recursive: true });
+  cpSync(join(wincam, 'mochi_wincam.node'), join(out, 'native', 'mochi_wincam.node'));
+  for (const arch of ['x64', 'x86'])
+    if (existsSync(join(wincam, arch)))
+      cpSync(join(wincam, arch), join(out, 'native', arch), { recursive: true });
+  console.log('With the Windows virtual camera.');
+}
 writeFileSync(
   join(out, 'package.json'),
   JSON.stringify(

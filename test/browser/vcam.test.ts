@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -224,10 +224,14 @@ describe.skipIf(!real || !dev)('the virtual camera, with a v4l2loopback device (
     await app?.close();
   });
 
-  /** One frame as a camera app reads it (ffmpeg, V4L2 capture, YUYV). */
-  const capture = (): Uint8Array =>
-    new Uint8Array(
-      execFileSync(
+  /**
+   * One frame as a camera app reads it (ffmpeg, V4L2 capture, YUYV).
+   * Asynchronous: Playwright, attached to every page of the app (the camera's
+   * hidden page too), must go on answering while ffmpeg runs.
+   */
+  const capture = (): Promise<Uint8Array> =>
+    new Promise((resolve, reject) =>
+      execFile(
         'ffmpeg',
         [
           '-loglevel',
@@ -250,21 +254,24 @@ describe.skipIf(!real || !dev)('the virtual camera, with a v4l2loopback device (
           'yuyv422',
           '-',
         ],
-        { maxBuffer: 64 << 20, timeout: 30_000 },
+        { maxBuffer: 64 << 20, timeout: 30_000, encoding: 'buffer' },
+        (e, out) => (e ? reject(e) : resolve(new Uint8Array(out).slice(-W * H * 2))),
       ),
-    ).slice(-W * H * 2);
+    );
 
   it('is listed and read by a camera app: size, colors, background and mirror', async () => {
     await setCamera(win, { enabled: true, background: '#00B140' });
     await expect.poll(async () => (await cameraState(win)).active, { timeout: 20_000 }).toBe(true);
     expect((await cameraState(win)).device).toBe(dev);
-    const f = capture();
+    const f = await capture();
     expect(f.length).toBe(W * H * 2);
     expect(rgb(f, { x: 2, y: 2 })).toSatisfy((c: number[]) => near(c, GREEN));
     expect(rgb(f, at(BODY))).toSatisfy((c: number[]) => near(c, BODY_OVER_GREEN));
     await setCamera(win, { mirror: true });
     await expect
-      .poll(() => near(rgb(capture(), at(BODY, true)), BODY_OVER_GREEN), { timeout: 20_000 })
+      .poll(async () => near(rgb(await capture(), at(BODY, true)), BODY_OVER_GREEN), {
+        timeout: 20_000,
+      })
       .toBe(true);
   });
 

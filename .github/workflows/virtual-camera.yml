@@ -1,0 +1,127 @@
+# The virtual camera on Windows and macOS (docs/virtual-camera.md): builds
+# the native parts and tests them on GitHub's runners. Started by hand
+# (Actions → Virtual camera → Run workflow), for one platform or both:
+# macOS runners cost the most minutes. The Linux camera's test is in
+# desktop.yml (the vcam job).
+name: Virtual camera
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which platform
+        type: choice
+        options: [windows, macos, both]
+        default: windows
+
+permissions:
+  contents: read
+
+jobs:
+  # The virtual camera on Windows: builds the module and the camera DLLs
+  # (64-bit and 32-bit), registers the DirectShow camera as Install does
+  # (regsvr32; the runner's user is an administrator), and runs the native
+  # test, in which ffmpeg's DirectShow input lists and reads the camera.
+  wincam:
+    if: inputs.platform != 'macos'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:wincam
+      - name: Register the DirectShow camera (64-bit and 32-bit)
+        shell: pwsh
+        run: |
+          $dll64 = Resolve-Path native/wincam/build/Release/x64/mochi_camera_dshow.dll
+          $dll32 = Resolve-Path native/wincam/build/Release/x86/mochi_camera_dshow.dll
+          $p = Start-Process regsvr32 -ArgumentList '/s', "`"$dll64`"" -Wait -PassThru
+          "regsvr32 64-bit: exit $($p.ExitCode)" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          $p = Start-Process "$env:WINDIR\SysWOW64\regsvr32.exe" -ArgumentList '/s', "`"$dll32`"" -Wait -PassThru
+          "regsvr32 32-bit: exit $($p.ExitCode)" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: Register the Media Foundation source (as Install does, from ProgramData)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:ProgramData 'Mochi Studio'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item native/wincam/build/Release/x64/mochi_camera_mf.dll $dir -Force
+          $p = Start-Process regsvr32 -ArgumentList '/s', "`"$dir\mochi_camera_mf.dll`"" -Wait -PassThru
+          "regsvr32 Media Foundation source: exit $($p.ExitCode)" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          Get-Service FrameServer -ErrorAction SilentlyContinue | Format-List Name, Status, StartType | Out-String | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, BuildNumber | Out-String) | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      # Windows' camera privacy setting ("Let desktop apps access your camera"),
+      # on by default on a person's PC; shown, then turned on, on the runner.
+      - name: Camera access for desktop apps
+        shell: pwsh
+        run: |
+          foreach ($root in 'HKCU:', 'HKLM:') {
+            $k = "$root\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+            foreach ($key in $k, "$k\NonPackaged") {
+              $before = (Get-ItemProperty -Path $key -Name Value -ErrorAction SilentlyContinue).Value
+              "$key was: $before" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+              New-Item -Path $key -Force | Out-Null
+              Set-ItemProperty -Path $key -Name Value -Value Allow
+            }
+          }
+      - name: ffmpeg (for the DirectShow reads)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress }
+          ffmpeg -hide_banner -version | Select-Object -First 1
+      - name: The camera, read by a DirectShow app
+        run: npx vitest run --project unit test/unit/wincam.test.ts
+        env:
+          MOCHI_WINCAM_TEST: '1'
+      - name: The Frame Server, after the Windows 11 camera's test
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Service FrameServer, FrameServerMonitor -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType
+          foreach ($log in Get-WinEvent -ListLog '*FrameServer*', '*MediaFoundation*' -ErrorAction SilentlyContinue) {
+            if ($log.RecordCount) {
+              "--- $($log.LogName)"
+              Get-WinEvent -LogName $log.LogName -MaxEvents 15 -ErrorAction SilentlyContinue | Format-List TimeCreated, Id, LevelDisplayName, Message
+            }
+          }
+      - name: Build the app (pages and desktop)
+        run: |
+          npm run build
+          npm run desktop:build
+      - name: The Windows 11 camera in the app, Install to Uninstall
+        run: npx vitest run --project browser test/browser/wincam11.test.ts
+        env:
+          MOCHI_WINCAM11_APP_TEST: '1'
+      - name: The camera in the app, Install to Uninstall
+        if: success() || failure()
+        run: npx vitest run --project browser test/browser/wincam.test.ts
+        env:
+          MOCHI_WINCAM_APP_TEST: '1'
+          # As on Windows 10: the DirectShow camera alone; the Windows 11 path has its own test.
+          MOCHI_WINCAM_NO_MF: '1'
+
+  # The virtual camera on macOS, unsigned: the core's unit tests (the NV12
+  # conversion against the reference's vectors, the frames from the app, the
+  # sink writer against a fake sink), then the helper and the Camera Extension
+  # build. Activating the extension needs a person's approval (or SIP off),
+  # which hosted runners don't allow: reading the camera is a check on a Mac.
+  maccam:
+    if: inputs.platform != 'windows'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The core's unit tests
+        working-directory: native/maccam
+        run: swift test
+      - name: Build the helper and the Camera Extension (unsigned)
+        run: npm run build:maccam
+      - name: What was built
+        run: |
+          ls -lR native/maccam/build
+          lipo -info native/maccam/build/mochi-camera
+          native/maccam/build/mochi-camera status

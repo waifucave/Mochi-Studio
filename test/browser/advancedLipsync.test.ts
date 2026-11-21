@@ -89,6 +89,8 @@ async function installVoice(p: Page): Promise<void> {
           src?.stop();
           src = undefined;
         },
+        /** The audio context's state and clock, for a test that times out. */
+        state: () => ({ state: ctx.state, time: ctx.currentTime, playing: !!src }),
         /** A quiet room: white noise at about −60 dBFS. */
         room() {
           src?.stop();
@@ -127,6 +129,38 @@ const strongest = (inputs: Record<string, number>): string => {
 };
 const play = (v: string) => page.evaluate((v) => (window as any).voice.play(v), v);
 const quiet = () => page.evaluate(() => (window as any).voice.quiet());
+
+/**
+ * Waits up to 5 s for the vowel to be the strongest voice input (and, with
+ * `level`, above it). On a time-out it says what the page heard meanwhile:
+ * the readings, how many frames ran, and the audio's state.
+ */
+async function untilVowel(v: string, level = 0): Promise<void> {
+  const seen: string[] = [];
+  const frames0 = await page.evaluate(() => (window as any).mochiStudio.framesDrawn as number);
+  const t0 = Date.now();
+  try {
+    await expect
+      .poll(
+        async () => {
+          const i = await voiceInputs(page);
+          seen.push(
+            `${Date.now() - t0} ms: ${VOWELS.map((x) => `${x} ${(i[`Voice${x}`] ?? 0).toFixed(2)}`).join(', ')}, silence ${(i.VoiceSilence ?? 0).toFixed(2)}`,
+          );
+          return strongest(i) === v && (i[`Voice${v}`] ?? 0) > level;
+        },
+        { timeout: 5000 },
+      )
+      .toBe(true);
+  } catch (e) {
+    const frames = (await page.evaluate(() => (window as any).mochiStudio.framesDrawn)) - frames0;
+    const audio = await page.evaluate(() => (window as any).voice.state());
+    console.log(
+      `Waiting for ${v}: ${frames} frames in ${Date.now() - t0} ms; audio ${JSON.stringify(audio)}; readings:\n${seen.slice(-12).join('\n')}`,
+    );
+    throw e;
+  }
+}
 
 beforeAll(async () => {
   H = await startHarness();
@@ -228,15 +262,7 @@ describe('the advanced lipsync', () => {
     for (const v of VOWELS) {
       await play(v);
       // The vowel's input is the strongest, and clearly so (it builds up over a few frames).
-      await expect
-        .poll(
-          async () => {
-            const i = await voiceInputs(page);
-            return strongest(i) === v && i[`Voice${v}`]! > 0.35;
-          },
-          { timeout: 5000 },
-        )
-        .toBe(true);
+      await untilVowel(v, 0.35);
       const inputs = await voiceInputs(page);
       expect(inputs.VoiceVolume).toBeGreaterThan(0.5);
       expect(inputs.VoiceSilence).toBeLessThan(0.3);
@@ -270,7 +296,7 @@ describe('the advanced lipsync', () => {
 
   it('gives plugins the voice inputs only with tracking-data access', async () => {
     await play('A');
-    await expect.poll(async () => strongest(await voiceInputs(page)), { timeout: 5000 }).toBe('A');
+    await untilVowel('A');
     const value = async (name: string) =>
       (await p1.request('ParameterValueRequest', { name })).data;
     // Without access: the defaults (silence).
@@ -335,7 +361,7 @@ describe('the advanced lipsync', () => {
     // With the calibrated voice, the vowels are still told apart.
     for (const v of ['A', 'U', 'E'] as const) {
       await play(v);
-      await expect.poll(async () => strongest(await voiceInputs(page)), { timeout: 5000 }).toBe(v);
+      await untilVowel(v);
     }
     await quiet();
     // Back to the neutral voice; the calibrated one stays in the list.
@@ -378,6 +404,46 @@ describe('the advanced lipsync', () => {
     await page.keyboard.press('Escape');
   });
 
+  it('stays off when turned off while it reopens, and the stream given last is the one heard', async () => {
+    // A slow microphone (a busy machine): unticking voice processing reopens it, and it is
+    // turned off, then given the synthetic voice, before that reopening finishes.
+    await page.evaluate(() => {
+      const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      (window as any).realGetUserMedia = real;
+      navigator.mediaDevices.getUserMedia = (c?: MediaStreamConstraints) =>
+        new Promise((r) => setTimeout(r, 800)).then(() => real(c));
+    });
+    await page.evaluate(() => (window as any).mochiStudio.startMicrophone());
+    await openSection(page, 'Audio');
+    await page.locator('#voice-processing').check();
+    await page.evaluate(() => (window as any).mochiStudio.stopMicrophone());
+    await page.waitForTimeout(1500);
+    expect(await page.evaluate(() => (window as any).mochiStudio.microphoneOn), 'still off').toBe(
+      false,
+    );
+    await page.locator('#voice-processing').uncheck();
+    await page.evaluate(() =>
+      (window as any).mochiStudio.startMicrophone(undefined, {
+        stream: (window as any).voice.stream,
+      }),
+    );
+    await page.waitForTimeout(1500);
+    await play('U');
+    await untilVowel('U');
+    expect(
+      await page.evaluate(
+        () => (window as any).mochiStudio.voiceStreamInUse === (window as any).voice.stream,
+      ),
+      'the synthetic voice, not the microphone',
+    ).toBe(true);
+    await quiet();
+    await page.evaluate(() => {
+      navigator.mediaDevices.getUserMedia = (window as any).realGetUserMedia;
+      (window as any).mochiStudio.stopMicrophone();
+    });
+    await page.keyboard.press('Escape');
+  });
+
   it('offers the model’s motion-sync settings, whose shapes then move the mouth', async () => {
     // The model's own motion-sync file (written with Mochi2D's writeMotionSync), one setting.
     expect(
@@ -403,7 +469,7 @@ describe('the advanced lipsync', () => {
     // Mochi2D's motion sync hears the vowel on the same stream: its analysis feeds the voice
     // inputs, and the setting's O shape (open 0.7, rounded) reaches the output view.
     await play('O');
-    await expect.poll(async () => strongest(await voiceInputs(page)), { timeout: 5000 }).toBe('O');
+    await untilVowel('O');
     await out.bringToFront();
     await expect
       .poll(
@@ -424,7 +490,7 @@ describe('the advanced lipsync', () => {
       .poll(() => page.evaluate(() => (window as any).mochiStudio.motionSyncSetting))
       .toBeUndefined();
     await play('I');
-    await expect.poll(async () => strongest(await voiceInputs(page)), { timeout: 5000 }).toBe('I');
+    await untilVowel('I');
     await quiet();
     await page.evaluate(() => (window as any).mochiStudio.stopMicrophone());
     await page.keyboard.press('Escape');

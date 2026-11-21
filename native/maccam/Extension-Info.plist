@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Camera Extension's Info.plist; build.sh fills in the @…@ values. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>@ID@</string>
+  <key>CFBundleExecutable</key>
+  <string>@ID@</string>
+  <key>CFBundleName</key>
+  <string>Mochi Studio Camera</string>
+  <key>CFBundleDisplayName</key>
+  <string>Mochi Studio Camera</string>
+  <key>CFBundlePackageType</key>
+  <string>SYSX</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.3</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT License</string>
+  <key>CMIOExtension</key>
+  <dict>
+    <key>CMIOExtensionMachServiceName</key>
+    <string>@SERVICE@</string>
+  </dict>
+</dict>
+</plist>

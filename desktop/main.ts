@@ -31,7 +31,7 @@ import { isOwnAddress, parseWebItem } from '../src/core/webItems.ts';
 import { parseSpoutConfig } from '../src/core/spout.ts';
 import { SpoutOutputs, loadSpoutAddon } from './spout.ts';
 import { parseVirtualCameraConfig } from '../src/core/virtualCamera.ts';
-import { VirtualCamera, loadV4l2Addon } from './virtualCamera.ts';
+import { VirtualCamera, cameraBackend } from './virtualCamera.ts';
 
 const port = Number(process.env.MOCHI_STUDIO_PORT ?? DEFAULT_PORT);
 // Tests keep their app data (browser storage, recent models) apart.
@@ -175,14 +175,24 @@ async function start(): Promise<void> {
   });
   ipcMain.handle('mochi:spout-state', (e) => (own(e.senderFrame?.url) ? spout.state() : null));
   app.on('will-quit', () => spout.stopAll());
-  // The virtual camera: on Linux, through a v4l2loopback device.
-  const camera = new VirtualCamera(loadV4l2Addon(__dirname), reportMainError);
+  // The virtual camera: a v4l2loopback device on Linux, the app's DirectShow camera on Windows.
+  const camera = new VirtualCamera(cameraBackend(__dirname), reportMainError);
   ipcMain.handle('mochi:vcam-configure', (e, raw: unknown) => {
     if (!own(e.senderFrame?.url)) return null;
     const c = parseVirtualCameraConfig(raw, origin);
     return c ? camera.configure(c) : camera.state();
   });
   ipcMain.handle('mochi:vcam-state', (e) => (own(e.senderFrame?.url) ? camera.state() : null));
+  ipcMain.handle('mochi:vcam-install', (e, action: unknown, options: unknown) =>
+    own(e.senderFrame?.url) && (action === 'install' || action === 'uninstall')
+      ? camera.install(action, {
+          olderApps:
+            typeof options === 'object' &&
+            options !== null &&
+            (options as { olderApps?: unknown }).olderApps === true,
+        })
+      : null,
+  );
   app.on('will-quit', () => camera.stop());
   ipcMain.handle('mochi:screens', (e) => {
     if (!own(e.senderFrame?.url)) return [];

@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld('mochiDesktop', {
   virtualCameraConfigure: (c: unknown): Promise<unknown> =>
     ipcRenderer.invoke('mochi:vcam-configure', c),
   virtualCameraState: (): Promise<unknown> => ipcRenderer.invoke('mochi:vcam-state'),
+  virtualCameraInstall: (
+    action: 'install' | 'uninstall',
+    options?: { olderApps?: boolean },
+  ): Promise<unknown> => ipcRenderer.invoke('mochi:vcam-install', action, options),
   onMainError: (fn: (text: string) => void): void => {
     ipcRenderer.on('mochi:main-error', (_e, text: unknown) => fn(String(text)));
   },

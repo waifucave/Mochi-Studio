@@ -172,6 +172,12 @@ describe('the camera’s writer, against a fake device', () => {
     };
     feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
     expect(feed.error).toBe('No space left on device');
+    // A size error ends with a frame of the right size (a page still laid out).
+    feed.frame(solid(2, 2, [0, 0, 0, 255]), 2, 2);
+    d.write = (f) => d.writes.push(f.slice());
+    feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
+    expect(feed.error).toBeUndefined();
+    d.writes.length = 0;
     d.write = (f) => d.writes.push(f.slice());
     feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
     expect(feed.error).toBeUndefined();

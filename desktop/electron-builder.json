@@ -1,5 +1,5 @@
 {
-  "appId": "org.mochistudio.desktop",
+  "appId": "com.waifucave.mochistudio",
   "productName": "Mochi Studio",
   "directories": {
     "app": "dist/app",
@@ -32,7 +32,17 @@
     "extendInfo": {
       "NSCameraUsageDescription": "Mochi Studio uses the camera to track your face. Video stays on this computer.",
       "NSMicrophoneUsageDescription": "Mochi Studio uses the microphone for lip sync. Audio stays on this computer."
-    }
+    },
+    "extraFiles": [
+      {
+        "from": "../native/maccam/build/mochi-camera",
+        "to": "MacOS/mochi-camera"
+      },
+      {
+        "from": "../native/maccam/build/com.waifucave.mochistudio.camera.systemextension",
+        "to": "Library/SystemExtensions/com.waifucave.mochistudio.camera.systemextension"
+      }
+    ]
   },
   "asarUnpack": ["native/**"],
   "extraFiles": [

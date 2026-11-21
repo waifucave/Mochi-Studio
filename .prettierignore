@@ -6,3 +6,6 @@ package-lock.json
 cleanroom
 # The sample model, copied unchanged from Mochi Maker.
 samples/mochi/
+# Generated test vectors (src/core/nv12.test.ts).
+test/fixtures/nv12-vectors.json
+native/maccam/Tests/MochiCameraCoreTests/nv12-vectors.json

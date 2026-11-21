@@ -1,20 +1,33 @@
 /**
  * The virtual camera's writer (docs/virtual-camera.md): it takes the output
- * view's frames, converts them (src/core/yuv.ts) and writes them to a
- * camera device at a steady rate.
+ * view's frames, converts them (src/core/yuv.ts) to the device's format
+ * and writes them to a camera device at a steady rate.
  *
  * A page paints only when something changes, but camera apps wait for every
  * frame. So each new frame is written as it arrives, and when none came for
  * a frame and a half, the last one is written again.
  */
-import { premultipliedToYuyv } from './yuv';
+import { premultipliedToNv12, premultipliedToYuyv } from './yuv';
 
-/** A camera device: the v4l2loopback device on Linux, or a fake one in tests. */
+/** The pixel formats the devices take: YUYV (Linux), NV12 (Windows and macOS). */
+export type CameraPixelFormat = 'yuyv' | 'nv12';
+
+/** Bytes a frame of this format and size takes. */
+export function frameBytes(format: CameraPixelFormat, width: number, height: number): number {
+  return format === 'nv12' ? (width * height * 3) / 2 : width * height * 2;
+}
+
+/**
+ * A camera device: the v4l2loopback device on Linux, the shared frame ring
+ * on Windows, the camera extension's feeder on macOS, or a fake one in tests.
+ */
 export interface CameraDevice {
   readonly path: string;
-  /** Sets the frame format (YUYV at this size) and the rate. Throws when the device refuses. */
+  /** The format it takes; YUYV when not said. */
+  readonly pixelFormat?: CameraPixelFormat;
+  /** Sets the frame size and the rate. Throws when the device refuses. */
   setFormat(width: number, height: number, fps: number): void;
-  /** Writes one frame (width × height × 2 bytes). */
+  /** Writes one frame (`frameBytes` of its format). */
   write(frame: Uint8Array): void;
   close(): void;
 }
@@ -31,7 +44,7 @@ export interface CameraFeedOptions {
   convert?: Converter;
 }
 
-/** Premultiplied pixels over `under` to YUYV, into `out`. */
+/** Premultiplied pixels over `under` to the device's format, into `out`. */
 export type Converter = (
   src: Uint8Array,
   width: number,
@@ -53,7 +66,7 @@ const realTimers: Timers = {
 };
 
 export class CameraFeed {
-  private yuyv: Uint8Array;
+  private out: Uint8Array;
   private have = false;
   private lastWrite = -Infinity;
   private timer: unknown;
@@ -62,6 +75,7 @@ export class CameraFeed {
   /** Frames converted from the page. */
   converted = 0;
   error: string | undefined;
+  private sizeError = false;
   /** What shows through transparent parts; changes take effect with the next frame. */
   under: number;
 
@@ -73,7 +87,7 @@ export class CameraFeed {
     this.device = device;
     this.o = o;
     this.timers = timers;
-    this.yuyv = new Uint8Array(o.width * o.height * 2);
+    this.out = new Uint8Array(frameBytes(device.pixelFormat ?? 'yuyv', o.width, o.height));
     this.under = o.under;
   }
 
@@ -90,14 +104,22 @@ export class CameraFeed {
   frame(pixels: Uint8Array, width: number, height: number): void {
     if (width !== this.o.width || height !== this.o.height) {
       this.error = `a frame of ${width} × ${height} for a camera of ${this.o.width} × ${this.o.height}`;
+      this.sizeError = true;
       return;
     }
-    (this.o.convert ?? premultipliedToYuyv)(
+    // A frame of the right size again (the page was still being laid out): that's over.
+    if (this.sizeError) {
+      this.error = undefined;
+      this.sizeError = false;
+    }
+    const reference =
+      this.device.pixelFormat === 'nv12' ? premultipliedToNv12 : premultipliedToYuyv;
+    (this.o.convert ?? reference)(
       pixels,
       width,
       height,
       this.under,
-      this.yuyv,
+      this.out,
       this.o.order ?? 'bgra',
     );
     this.have = true;
@@ -107,7 +129,7 @@ export class CameraFeed {
 
   private write(): void {
     try {
-      this.device.write(this.yuyv);
+      this.device.write(this.out);
       this.frames++;
       this.lastWrite = this.timers.now();
       this.error = undefined;

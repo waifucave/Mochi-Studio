@@ -1,14 +1,16 @@
 /**
  * The Camera tab's virtual-camera section, after Spout2: the
  * avatar as "Mochi Studio Camera" for call and streaming apps. On, Mirror,
- * the size and rate, and the background; a status line; and, while the
- * device is missing, what to install and run. Desktop app on Linux for now.
+ * the size and rate, and the background; a status line; on Windows, Install
+ * and Uninstall; and on Linux, while the device is missing, what to install
+ * and run. Desktop app only.
  */
 import {
   CAMERA_NAME,
   CAMERA_RATES,
   CAMERA_SIZES,
   KEY_GREEN,
+  type CameraInstallState,
   type VirtualCameraSettings,
 } from '../core/virtualCamera';
 import { h } from './dom';
@@ -27,7 +29,7 @@ export function virtualCameraSection(
       h(
         'p',
         { class: 'hint', id: 'vcam-note' },
-        st.problem ?? 'The virtual camera is available in the desktop app (Linux for now).',
+        st.problem ?? 'The virtual camera is available in the desktop app.',
       ),
     );
     return box;
@@ -114,6 +116,7 @@ export function virtualCameraSection(
     backgroundRow(s, set),
     h('p', { class: 'hint vcam-status', id: 'vcam-status' }, status()),
   );
+  if (st.install) box.append(installRow(studio, st.install));
   if (st.setup?.length)
     box.append(
       h('p', { class: 'hint' }, 'To make the camera, install v4l2loopback and load it once:'),
@@ -168,5 +171,64 @@ function backgroundRow(
       onchange: (e: Event) => set({ background: (e.target as HTMLInputElement).value }),
     }),
     h('button', { id: 'vcam-green', onclick: () => set({ background: KEY_GREEN }) }, 'Key green'),
+  );
+}
+
+/** The person's choice for the next Install, kept while the row is redrawn. */
+let olderAppsChoice: boolean | undefined;
+
+/** Windows and macOS: the camera other apps list is installed once, and can be removed. */
+function installRow(studio: Studio, i: CameraInstallState): HTMLElement {
+  // Windows 11: the second camera, for apps that only use DirectShow, on request.
+  const older =
+    i.olderApps === undefined
+      ? undefined
+      : h('input', {
+          type: 'checkbox',
+          id: 'vcam-older-apps',
+          checked: olderAppsChoice ?? i.olderApps,
+          onchange: (e: Event) => (olderAppsChoice = (e.target as HTMLInputElement).checked),
+        });
+  const act = (action: 'install' | 'uninstall') =>
+    void studio.installVirtualCamera(
+      action,
+      older ? { olderApps: (older as HTMLInputElement).checked } : undefined,
+    );
+  return h(
+    'div',
+    { class: 'vcam-install', id: 'vcam-install' },
+    h(
+      'div',
+      { class: 'row' },
+      h(
+        'strong',
+        { id: 'vcam-installed', 'data-installed': String(i.installed) },
+        i.busy ? 'Working…' : i.installed ? 'Installed' : 'Not installed',
+      ),
+      h(
+        'button',
+        { id: 'vcam-install-button', disabled: !!i.busy, onclick: () => act('install') },
+        i.installed ? 'Install again' : 'Install',
+      ),
+      i.installed
+        ? h(
+            'button',
+            { id: 'vcam-uninstall-button', disabled: !!i.busy, onclick: () => act('uninstall') },
+            'Uninstall',
+          )
+        : '',
+    ),
+    older
+      ? h(
+          'label',
+          { class: 'row' },
+          older,
+          ' Also for older apps (a second camera, for apps that use only DirectShow, and 32-bit apps). Takes effect at Install.',
+        )
+      : '',
+    i.detail ? h('p', { class: 'hint' }, i.detail) : '',
+    i.error
+      ? h('p', { class: 'hint error', role: 'alert', id: 'vcam-install-error' }, i.error)
+      : '',
   );
 }

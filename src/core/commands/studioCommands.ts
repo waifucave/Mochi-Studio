@@ -929,7 +929,7 @@ export function studioCommands(): Array<CommandDef<unknown, unknown, StudioApi>>
     }),
     command({
       name: 'set_virtual_camera',
-      summary: `The virtual camera in the desktop app (Linux for now): the avatar as a camera named "${CAMERA_NAME}" that other apps open.`,
+      summary: `The virtual camera in the desktop app (Linux; Windows once installed from the Camera tab): the avatar as a camera named "${CAMERA_NAME}" that other apps open.`,
       details: `Fields left out keep their value. Sizes: ${CAMERA_SIZES.map((z) => `${z.width}×${z.height}`).join(', ')}; rates: ${CAMERA_RATES.join(' or ')}. The background is "stage" (the stage's own) or a #rrggbb color under the avatar (video apps show no transparency). Mirror is off by default: call apps mirror only the person's own preview. get_state.virtualCamera shows the device and what to install when it is missing.`,
       scope: 'control',
       args: s.object({

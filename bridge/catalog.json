@@ -631,7 +631,7 @@
   },
   {
     "name": "set_virtual_camera",
-    "summary": "The virtual camera in the desktop app (Linux for now): the avatar as a camera named \"Mochi Studio Camera\" that other apps open.",
+    "summary": "The virtual camera in the desktop app (Linux; Windows once installed from the Camera tab): the avatar as a camera named \"Mochi Studio Camera\" that other apps open.",
     "details": "Fields left out keep their value. Sizes: 1280×720, 1920×1080, 960×540; rates: 30 or 60. The background is \"stage\" (the stage's own) or a #rrggbb color under the avatar (video apps show no transparency). Mirror is off by default: call apps mirror only the person's own preview. get_state.virtualCamera shows the device and what to install when it is missing.",
     "scope": "control",
     "undoable": true,

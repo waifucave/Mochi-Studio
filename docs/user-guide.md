@@ -944,13 +944,44 @@ they run on different chips, OBS's Spout2 source stays black.
 Agents can switch the outputs too (`set_spout`), and `get_state` shows each
 sender ([agent-api.md](agent-api.md)).
 
-### A virtual camera for calls (Linux, desktop app)
+### A virtual camera for calls (desktop app)
 
-The desktop app on Linux can send the avatar as a camera named **Mochi
-Studio Camera**. Discord, Zoom, Meet in a browser, OBS and other apps then
-list it with your other cameras. Windows and macOS follow.
+The desktop app can send the avatar as a camera named **Mochi Studio
+Camera**. Discord, Zoom, Meet in a browser, OBS and other apps then list it
+with your other cameras. Each system needs one step first, below; the
+settings after that are the same everywhere.
 
-**Once, before the first use,** install v4l2loopback and load it with the
+**Windows:** in the Camera tab, under **Virtual camera**, press **Install**.
+
+- **Windows asks for administrator rights once:** Install registers the
+  camera for every app on this computer. Mochi Studio itself never runs as
+  administrator.
+- **What it installs:**
+  - **Windows 11:** a camera every app lists while Mochi Studio runs. Apps
+    show it as **Mochi Studio Camera (Windows Virtual Camera)**.
+  - **Windows 10:** a DirectShow camera that DirectShow apps list (OBS,
+    Zoom, Discord, older tools), in 64-bit and 32-bit apps alike.
+  - **On Windows 11, for an app that doesn't list the camera** (an app that
+    uses only DirectShow, or a 32-bit one): tick **Also for older apps**,
+    then press **Install** again. It adds the DirectShow camera too. Apps
+    that list both show two entries; either works.
+- **While Mochi Studio isn't sending,** the camera shows a still card that
+  says so.
+- **Uninstall** in the same place removes it (another administrator
+  prompt).
+
+**macOS:** move Mochi Studio to the **Applications** folder, then in the
+Camera tab press **Install**.
+
+- macOS asks you to approve **Mochi Studio Camera** once, in System
+  Settings → Privacy & Security (or General → Login Items & Extensions).
+- Every app that uses the Mac's cameras lists it: FaceTime, Zoom, Teams,
+  browsers, OBS.
+- **The camera needs a signed build of the app.** The project's builds are
+  not signed yet, so on macOS the camera works only in a signed build.
+- **Uninstall** asks macOS to remove it.
+
+**Linux:** once, before the first use, install v4l2loopback and load it with the
 camera's name. The Camera tab shows these lines while the camera is
 missing:
 

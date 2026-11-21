@@ -818,8 +818,11 @@ export class MochiRuntime implements AvatarRuntime {
     files: ModelFileSet,
     state: { visible: boolean; placement?: ItemPlacement },
   ): Promise<void> {
-    // Replacing an item's files keeps its tint.
-    this.itemMap.get(id)?.dispose();
+    // Replacing an item's files keeps its tint and its opacity (a plugin's brightness
+    // redraws a still picture: its opacity stays).
+    const previous = this.itemMap.get(id);
+    const opacity = previous?.opacity;
+    previous?.dispose();
     this.itemMap.delete(id);
     // Mochi2D knows the item by Mochi Studio's id, so copies keep their own places.
     const item = await this.v.addItem(toSource(files), {
@@ -827,6 +830,7 @@ export class MochiRuntime implements AvatarRuntime {
       ...(state.placement ? { placement: state.placement } : {}),
     });
     item.visible = state.visible;
+    if (opacity !== undefined) item.opacity = opacity;
     this.itemMap.set(id, item);
     this.applyItemTint(id);
     this.applyItemFrame(id);

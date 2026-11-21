@@ -26,8 +26,11 @@ tracking session (`npm run screenshots`).
 > for Linux, Windows and macOS, on Mochi2D 0.21.0 (vendored in `vendor/`).
 > Face, hand and voice tracking, items, hotkeys, the settings import, the
 > plugin API, the agent API, Spout2 output (Windows), a virtual camera
-> (Linux) and collaborations are built and tested. Not yet: the virtual
-> camera on Windows and macOS, and signed builds.
+> (Linux) and collaborations are built and tested. The virtual camera on
+> Windows 10 and 11 is built and tested end to end on GitHub's Windows
+> runner (Windows Server 2025), not yet on a person's PC or in call apps.
+> On macOS it is built and its core tested, unsigned; it runs only in a
+> signed build. Not yet: signed builds.
 >
 > **No signaling server is set or run.** Collaborations need one: the app
 > sets none, and the project runs none. Run your own, or use one someone

@@ -3,7 +3,7 @@
 A design for Mochi Studio's virtual camera, written before any code. It turns the avatar into a camera that video-call and
 streaming apps can open: Discord, Zoom, Teams, Meet in a browser, and OBS.
 
-**Status:** Linux is built. Two changes from this design:
+**Status:** Linux, Windows and macOS (unsigned) are built. On Linux, two changes from this design:
 
 - **The conversion** runs in the native module, at 2 ms for a 1280 × 720
   frame, instead of a WebGL pass. Linux needs YUYV, and the module writes
@@ -17,7 +17,17 @@ streaming apps can open: Discord, Zoom, Teams, Meet in a browser, and OBS.
 - **The still card** while nothing is sent isn't built yet. On Linux, the
   device closes, and apps show their own "no camera" picture.
 
-Windows and macOS are still to do.
+**Windows** is built: the DirectShow camera and the Windows 11 (Media
+Foundation) camera, with Install and Uninstall. The conversion to NV12 is
+in the native module too (1.6 to 3.3 ms at 1280 × 720 on the runner), and
+both cameras show a still card while nothing is sent. Both are tested end
+to end on GitHub's Windows runner (`virtual-camera.yml`). What remains is a
+check on a person's PC and in call apps.
+
+**macOS** is built, unsigned: the Camera Extension, its helper and the
+app's side. Their core is unit-tested on the macOS runner. Activating the
+extension needs a signed build; the steps for it are under
+[Release build](#macos).
 
 Marks used below:
 
@@ -118,15 +128,22 @@ Two kinds of virtual camera exist. The plan is to build both.
 - **Which apps see it:** apps that use Media Foundation or WinRT
   `MediaCapture`, such as the Windows Camera app, Teams and Chromium-based
   browsers.
-  - **To check:** whether DirectShow apps (OBS's Video Capture Device,
-    older Zoom builds) list it.
+  - **DirectShow apps list it too** (checked on GitHub's Windows runner,
+    Windows Server 2025, with ffmpeg's DirectShow input), as "Mochi Studio
+    Camera (Windows Virtual Camera)": Windows adds that suffix to a virtual
+    camera's name.
 - **What it installs:**
   - **Nothing for the camera itself:** no driver, and no reboot.
   - **The DLL's COM registration:** the Frame Server, a service, has to
     find the class.
-  - **To check:** whether a registration under `HKCU` is enough when the
-    camera has current-user access, or whether `HKLM` is needed. `HKLM`
-    needs administrator rights once, at Install.
+  - **Where:** `HKLM`, with the DLL copied to `%ProgramData%\Mochi Studio\`.
+    The Frame Server runs as Local Service and can't read a per-user install
+    in the person's profile. `HKLM` needs administrator rights once, at
+    Install. (`HKCU` alone was not tried: the service doesn't read the
+    person's registry hive.)
+  - **The class gives an `IMFActivate`:** the Frame Server asks for one
+    (without it, starting the camera failed with `E_NOINTERFACE`), and
+    releases it once it has the source, which must go on working.
 - **Administrator rights:**
   - **Needed for:** all-users access.
   - **Not needed for:** current-user access, besides the registration
@@ -165,11 +182,11 @@ Two kinds of virtual camera exist. The plan is to build both.
   - Windows 11 creates the Media Foundation camera;
   - the DirectShow filter covers Windows 10 and apps that only enumerate
     DirectShow.
-- **Avoiding two cameras:** if a DirectShow app also lists the Media
-  Foundation camera, the same machine would show two "Mochi Studio
-  Camera" entries. The test below settles this. If it happens, Windows 11
-  installs only the Media Foundation camera, unless the person asks for
-  the other in the settings.
+- **Avoiding two cameras:** DirectShow apps also list the Media Foundation
+  camera (the runner showed it). So Windows 11 installs only the Media
+  Foundation camera, unless the person ticks **Also for older apps** in the
+  Camera tab, which adds the DirectShow one (apps that use only DirectShow,
+  and 32-bit apps). Windows 10 installs the DirectShow camera.
 - **Install:** one press, with one administrator prompt (UAC) for the
   registrations. It never needs Mochi Studio itself to run as
   administrator.
@@ -251,20 +268,22 @@ Two kinds of virtual camera exist. The plan is to build both.
     `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`.
   - **What a maintainer sets up in one sitting** (developer.apple.com,
     Certificates, Identifiers & Profiles):
-    1. **App ID for the app:** `org.mochistudio.desktop` (the `appId` in
+    1. **App ID for the app:** `com.waifucave.mochistudio` (the `appId` in
        `desktop/electron-builder.json`), with the **System Extension**
        capability and the **App Groups** capability.
-    2. **App ID for the extension:** `org.mochistudio.desktop.camera`.
+    2. **App ID for the extension:** `com.waifucave.mochistudio.camera`.
        The extension's ID must begin with the app's. It needs the **App
        Groups** capability.
-    3. **An App Group,** for example `group.org.mochistudio.desktop`,
-       assigned to both App IDs.
+    3. **The app group** `<TeamID>.com.waifucave.mochistudio`, in both
+       entitlement files (`native/maccam/entitlements/`).
        - The extension's Mach service name (`CMIOExtensionMachServiceName`
-         in its `Info.plist`) must begin with an app group of the
-         extension, written with the team prefix (`<TeamID>.…`).
-       - **To check:** whether this form or the `group.` form is the one
-         `codesign` and the system accept for Developer ID, on the macOS
-         versions we support.
+         in its `Info.plist`), `<TeamID>.com.waifucave.mochistudio.camera`,
+         begins with that group, as Core Media I/O requires. `build.sh`
+         writes it when `MOCHI_TEAM_ID` is set.
+       - A team-prefixed macOS group is not registered as a separate
+         identifier. If the portal asks for a registered group for the
+         profiles, the `group.com.waifucave.mochistudio` form replaces it
+         in the entitlements and the service name.
     4. **Two Developer ID provisioning profiles,** one per App ID. The
        System Extension entitlement is restricted, so it is valid only
        with a profile.
@@ -296,11 +315,11 @@ Two kinds of virtual camera exist. The plan is to build both.
 
 ## Tests on the runners
 
-| Runner           | What can run                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ubuntu-latest`  | **All of it.** Install `v4l2loopback-dkms` and the runner's extra kernel modules, then `sudo modprobe` with the line above. The app sends a known frame, `ffmpeg -f v4l2` reads one, and the test compares size, color (the BT.709 conversion within a tolerance), background and mirror. The module builds through DKMS and loads on the runner's kernel (checked); if it doesn't, the test is skipped with that reason. |
-| `windows-latest` | **DirectShow:** the runner's user is an administrator, so `regsvr32` works. `ffmpeg -f dshow` reads a frame, compared as on Linux. **Media Foundation:** a test asks `MFCreateVirtualCamera` and reads the camera with a small Media Foundation reader. To check: Windows Server images may lack the Camera Frame Server. Then the test is skipped with that reason, and runs on a person's Windows 11.                   |
-| `macos-latest`   | **Build only:** the extension builds unsigned, and its NV12 conversion and sink writer get unit tests against a fake sink. Activating a system extension needs a person's approval, or SIP off, which hosted runners don't allow. So reading the camera is a manual check on a maintainer's Mac, after the first signed build.                                                                                            |
+| Runner           | What can run                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ubuntu-latest`  | **All of it.** Install `v4l2loopback-dkms` and the runner's extra kernel modules, then `sudo modprobe` with the line above. The app sends a known frame, `ffmpeg -f v4l2` reads one, and the test compares size, color (the BT.709 conversion within a tolerance), background and mirror. The module builds through DKMS and loads on the runner's kernel (checked); if it doesn't, the test is skipped with that reason.                                                                        |
+| `windows-latest` | **DirectShow:** the runner's user is an administrator, so `regsvr32` works. `ffmpeg -f dshow` reads a frame, compared as on Linux. **Media Foundation:** a test asks `MFCreateVirtualCamera` and reads the camera with a small Media Foundation reader. The runner's image (Windows Server 2025) has the Camera Frame Server (started on demand); its camera privacy setting for desktop apps is off, and the workflow turns it on. Where the camera can't be made, the test says why and skips. |
+| `macos-latest`   | **Build only:** the extension builds unsigned, and its NV12 conversion and sink writer get unit tests against a fake sink. Activating a system extension needs a person's approval, or SIP off, which hosted runners don't allow. So reading the camera is a manual check on a maintainer's Mac, after the first signed build.                                                                                                                                                                   |
 
 Two checks to run once on a person's Windows 11:
 
