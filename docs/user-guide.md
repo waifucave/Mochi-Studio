@@ -96,6 +96,17 @@ Zips are read by Mochi2D, which also understands file names written in older
 encodings (Chinese, Japanese, Korean). RAR and 7z archives are not supported:
 extract them first.
 
+**Size limits.** A zip, a model from an address or an item zip may hold
+at most 2,000 files, 64 MB a file once unpacked, and 256 MB in all: four
+times the largest texture and three times the largest model we have
+measured. A zip that unpacks past these is refused as **too large**; one
+whose contents don't match its own records (a file longer than it says, or
+a wrong checksum) is refused as **damaged**, and is worth downloading or
+copying again. Settings files follow the same limits, with 16 MB for the
+settings themselves; **Export…** says so instead of writing a file the
+import would refuse. A picture dropped on the stage may be up to 64 MB and
+64 million pixels. A folder you open has no limits: it is your own.
+
 When a manifest lists no expressions or motions, Mochi Studio offers the
 `.exp3.json` and `.motion3.json` files it finds in the folder (marked "found
 in folder").

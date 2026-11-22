@@ -14,7 +14,21 @@ import { frameFolderItem, framePaths } from './animatedItems';
 import { dragTransform, normalizeRotation, zoomAround, type SceneTransform } from '../core/scene';
 import { SettingsError } from '../core/settings';
 import { SYNC_CHANNEL, channelTransport, combineTransports } from '../core/sync';
-import { downloadText, h, numberInput, readFileBytes, readFileText, select } from './dom';
+import {
+  downloadText,
+  FileTooLargeError,
+  h,
+  numberInput,
+  readFileBytes,
+  readFileText,
+  select,
+} from './dom';
+import {
+  fileTooLargeMessage,
+  maxArchiveFileBytes,
+  MAX_SETTINGS_JSON_BYTES,
+  SETTINGS_ARCHIVE_LIMITS,
+} from '../core/archiveLimits';
 import {
   framesOf,
   fromDrop,
@@ -809,13 +823,22 @@ panels.Model.append(
       {
         onclick: async () => {
           if (!studio.settings) return notify('Load a model first.', 'error');
-          const data = await readFileBytes('.json,.zip,application/json,application/zip');
-          if (data === undefined) return;
+          const max = maxArchiveFileBytes(SETTINGS_ARCHIVE_LIMITS);
           try {
+            const data = await readFileBytes(
+              '.json,.zip,application/json,application/zip',
+              max,
+              (size) => fileTooLargeMessage('This settings file', size, max),
+            );
+            if (data === undefined) return;
             await studio.importSettingsFile(data);
             notify('Settings imported.');
           } catch (e) {
-            fail(e instanceof SettingsError ? e : new Error('Could not import settings.'));
+            fail(
+              e instanceof SettingsError || e instanceof FileTooLargeError
+                ? e
+                : new Error('Could not import settings.'),
+            );
           }
         },
       },
@@ -829,7 +852,9 @@ function renderImport(result?: import('../core/importers/vtubeStudio').ImportRes
   importBox.replaceChildren();
   if (!studio.model) return;
   const fromFile = async (): Promise<void> => {
-    const text = await readFileText('.json,application/json');
+    const text = await readFileText('.json,application/json', MAX_SETTINGS_JSON_BYTES, (size) =>
+      fileTooLargeMessage('This settings file', size, MAX_SETTINGS_JSON_BYTES),
+    ).catch(failed);
     if (text !== undefined) renderImport(await studio.previewVtubeImport(text).catch(failed));
   };
   const failed = (e: unknown): undefined => void fail(e);
@@ -1505,7 +1530,7 @@ itemFolderInput.addEventListener('change', () => {
 });
 itemZipInput.addEventListener(
   'change',
-  () => itemZipInput.files?.[0] && void addItem(fromZipFile(itemZipInput.files[0])),
+  () => itemZipInput.files?.[0] && void addItem(fromZipFile(itemZipInput.files[0], 'This item')),
 );
 
 /** An animated item's frame rate (0–60; 0 holds the frame) and play state. */

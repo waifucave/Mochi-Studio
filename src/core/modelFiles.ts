@@ -1,4 +1,17 @@
-import { sourceFromZip } from 'mochi2d/headless';
+import type { ArchiveLimits } from 'mochi2d/headless';
+import {
+  ArchiveLimitError,
+  sourceFromZip,
+  UnsupportedArchiveError,
+  ZipFormatError,
+} from 'mochi2d/headless';
+import {
+  fileTooLargeMessage,
+  tooLargeDetail,
+  maxArchiveFileBytes,
+  MODEL_ARCHIVE_LIMITS,
+  type ArchiveProblem,
+} from './archiveLimits';
 
 const utf8 = new TextDecoder();
 const strFromU8 = (d: Uint8Array): string => utf8.decode(d);
@@ -16,7 +29,38 @@ export interface ModelFileSet {
   read(path: string): Promise<Uint8Array>;
 }
 
-export class ModelLoadError extends Error {}
+/**
+ * Says plainly what went wrong with an archive: too large (a cap) or
+ * damaged (a zip that isn't one, or whose data doesn't match its records).
+ * `what` names it: "This model", "This item", "This settings file".
+ */
+export function describeArchiveError(
+  e: unknown,
+  what: string,
+): { problem: ArchiveProblem; message: string } | undefined {
+  if (e instanceof ArchiveLimitError)
+    return {
+      problem: 'too-large',
+      message: `${what} is larger than we accept. ${tooLargeDetail(e.kind, e.limit, e.size, e.kind === 'entry' ? e.path : undefined)}`,
+    };
+  if (e instanceof UnsupportedArchiveError) return { problem: 'unsupported', message: e.message };
+  if (e instanceof ZipFormatError)
+    return {
+      problem: 'damaged',
+      message: `${what} is a damaged zip, so it can’t be opened. Download or copy it again. (${e.message})`,
+    };
+  return undefined;
+}
+
+export class ModelLoadError extends Error {
+  constructor(
+    message: string,
+    /** Why an archive was refused: too large (a cap), damaged, or not a zip at all. */
+    readonly problem?: ArchiveProblem,
+  ) {
+    super(message);
+  }
+}
 
 /** When the chosen folder or zip holds no model settings file. */
 export const NO_MANIFEST =
@@ -101,17 +145,49 @@ export class MemoryFileSet extends RootedFileSet {
 /**
  * Files from a zip archive, read with Mochi2D's zip reader. It decompresses
  * entries when they are read and decodes legacy file-name encodings (GBK,
- * Shift_JIS, EUC-KR, Big5, Info-ZIP Unicode paths).
+ * Shift_JIS, EUC-KR, Big5, Info-ZIP Unicode paths). Reads stay within
+ * `caps` (src/core/archiveLimits.ts); past one, or on damaged data, the
+ * read fails with a `ModelLoadError` that says which.
  */
-export function fileSetFromZip(label: string, data: Uint8Array): ModelFileSet {
+export function fileSetFromZip(
+  label: string,
+  data: Uint8Array,
+  caps: Readonly<Required<ArchiveLimits>> = MODEL_ARCHIVE_LIMITS,
+  what = 'This model',
+): ModelFileSet {
+  const max = maxArchiveFileBytes(caps);
+  if (data.length > max)
+    throw new ModelLoadError(fileTooLargeMessage(what, data.length, max), 'too-large');
+  const refuse = (e: unknown): ModelLoadError => {
+    const d = describeArchiveError(e, what);
+    return d
+      ? new ModelLoadError(d.message, d.problem)
+      : new ModelLoadError(`Not a readable zip file: ${(e as Error).message}`, 'damaged');
+  };
   let source: ReturnType<typeof sourceFromZip>;
   try {
-    source = sourceFromZip(label, data);
+    source = sourceFromZip(label, data, caps);
   } catch (e) {
-    throw new ModelLoadError(`Not a readable zip file: ${(e as Error).message}`);
+    throw refuse(e);
   }
   const paths = (source.list() ?? []).filter((p) => !p.endsWith('/') && !p.startsWith('__MACOSX/'));
-  return new RootedFileSet(label, paths, (p) => source.read(p));
+  return new RootedFileSet(label, paths, async (p) => {
+    try {
+      return await source.read(p);
+    } catch (e) {
+      throw e instanceof ModelLoadError ? e : refuse(e);
+    }
+  });
+}
+
+/** Refuses a zip file before reading it, when it is larger than any archive within `caps`. */
+export function checkArchiveFileSize(
+  size: number,
+  caps: Readonly<Required<ArchiveLimits>> = MODEL_ARCHIVE_LIMITS,
+  what = 'This model',
+): void {
+  const max = maxArchiveFileBytes(caps);
+  if (size > max) throw new ModelLoadError(fileTooLargeMessage(what, size, max), 'too-large');
 }
 
 /** Minimal shape of a browser `File` from a folder picker or drag and drop. */
@@ -132,28 +208,110 @@ export async function fileSetFromFiles(
   return new MemoryFileSet(label, entries);
 }
 
-export type Fetcher = (
-  url: string,
-) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
+export type Fetcher = (url: string) => Promise<{
+  ok: boolean;
+  status: number;
+  headers?: { get(name: string): string | null };
+  body?: ReadableStream<Uint8Array> | null;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}>;
+
+/**
+ * A response's body, refused once it passes `max` bytes: by its declared
+ * length before anything is read, else while it streams in.
+ */
+async function readCapped(
+  res: Awaited<ReturnType<Fetcher>>,
+  max: number,
+  tooLarge: (size: number) => ModelLoadError,
+  /** Bytes all downloads of one model may take together, counted as they arrive. */
+  shared?: { used: number; max: number; tooLarge: (size: number) => ModelLoadError },
+): Promise<Uint8Array> {
+  const declared = Number(res.headers?.get('content-length') ?? NaN);
+  if (declared > max) throw tooLarge(declared);
+  if (shared && shared.used + declared > shared.max) throw shared.tooLarge(shared.used + declared);
+  const count = (n: number): void => {
+    if (!shared) return;
+    shared.used += n;
+    if (shared.used > shared.max) throw shared.tooLarge(shared.used);
+  };
+  if (!res.body) {
+    const data = new Uint8Array(await res.arrayBuffer());
+    if (data.length > max) throw tooLarge(data.length);
+    count(data.length);
+    return data;
+  }
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    try {
+      if (size > max) throw tooLarge(size);
+      count(value.length);
+    } catch (e) {
+      void reader.cancel().catch(() => undefined);
+      throw e;
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
 
 /**
  * Files from a URL pointing at a `.model3.json` (or a `.zip`). Referenced
- * files are fetched relative to it, on demand.
+ * files are fetched relative to it, on demand. Downloads stay within the
+ * model caps (src/core/archiveLimits.ts): a zip within the size of an
+ * archive the caps allow, each file within the per-file cap, and all the
+ * files together within the total.
  */
-export async function fileSetFromUrl(url: string, fetcher: Fetcher = fetch): Promise<ModelFileSet> {
+export async function fileSetFromUrl(
+  url: string,
+  fetcher: Fetcher = fetch,
+  caps: Readonly<Required<ArchiveLimits>> = MODEL_ARCHIVE_LIMITS,
+): Promise<ModelFileSet> {
+  const what = 'This model';
   const res = await fetcher(url);
   if (!res.ok) throw new ModelLoadError(`Could not fetch ${url} (HTTP ${res.status}).`);
-  const data = new Uint8Array(await res.arrayBuffer());
+  const maxFile = maxArchiveFileBytes(caps);
+  const data = await readCapped(
+    res,
+    maxFile,
+    (size) => new ModelLoadError(fileTooLargeMessage(what, size, maxFile), 'too-large'),
+  );
   const pathname = new URL(url, 'http://x/').pathname;
   if (pathname.toLowerCase().endsWith('.zip') || (data[0] === 0x50 && data[1] === 0x4b)) {
-    return fileSetFromZip(url, data);
+    return fileSetFromZip(url, data, caps, what);
   }
   const manifestName = decodeURIComponent(pathname.split('/').pop() || 'model.model3.json');
+  const entryTooLarge = (path: string) => (size: number) =>
+    new ModelLoadError(
+      `${what} is larger than we accept. ${tooLargeDetail('entry', caps.maxEntryBytes, size, path)}`,
+      'too-large',
+    );
+  if (data.length > caps.maxEntryBytes) throw entryTooLarge(manifestName)(data.length);
   const manifest = parseManifest(strFromU8(data), manifestName);
   // Reads in flight are shared too: the app reads every file for output views while
   // the renderer loads the same files.
   const cache = new Map<string, Promise<Uint8Array>>([[manifestName, Promise.resolve(data)]]);
   const known = new Set([manifestName, ...referencedFiles(manifest)]);
+  const shared = {
+    used: data.length,
+    max: caps.maxTotalBytes,
+    tooLarge: (size: number) =>
+      new ModelLoadError(
+        `${what} is larger than we accept. ${tooLargeDetail('total', caps.maxTotalBytes, size)}`,
+        'too-large',
+      ),
+  };
   return {
     label: url,
     paths: () => [...known],
@@ -167,7 +325,7 @@ export async function fileSetFromUrl(url: string, fetcher: Fetcher = fetch): Pro
             new URL(n.split('/').map(encodeURIComponent).join('/'), url).href,
           );
           if (!r.ok) throw new ModelLoadError(`Could not fetch ${n} (HTTP ${r.status}).`);
-          return new Uint8Array(await r.arrayBuffer());
+          return readCapped(r, caps.maxEntryBytes, entryTooLarge(n), shared);
         })();
         cache.set(n, hit);
         hit.catch(() => cache.delete(n));

@@ -11,6 +11,7 @@
  *   shared order (in front of this app's model or behind it), moving with
  *   their smoothed parameters. Hidden ones are hidden here only.
  */
+import { sharedModelTooLarge } from '../../core/collab/sharedModel';
 import { COLLAB_ITEM_PREFIX, stageOrder, type StagePlace } from '../../core/collab/stage';
 import { imageItemFiles } from '../../core/imageItem';
 import { canvasPng, pngContext } from '../canvasPng';
@@ -20,7 +21,6 @@ import type { MochiRuntime } from '../mochiRuntime';
 import type { Studio } from '../studio';
 import {
   CollabSession,
-  MAX_SHARED_BYTES,
   type CollabLocal,
   type ModelAnnouncement,
   type SessionListener,
@@ -95,9 +95,14 @@ export class CollabStage implements CollabApi {
         let mode: 'shared' | 'video' =
           studio.settings.collabSharing === 'shared' ? 'shared' : 'video';
         this.sharingNote = undefined;
-        if (mode === 'shared' && bytes > MAX_SHARED_BYTES) {
+        // Within the caps the others check (src/core/collab/sharedModel.ts).
+        const tooLarge =
+          mode === 'shared'
+            ? sharedModelTooLarge(files.map((path, i) => ({ path, size: sizes[i]! })))
+            : undefined;
+        if (tooLarge) {
           mode = 'video';
-          this.sharingNote = 'This model is over 300 MB, so others get it as video only.';
+          this.sharingNote = `This model is too large to share, so others get it as video only. ${tooLarge.detail}`;
         }
         let video: ModelAnnouncement['video'];
         if (mode === 'video') {
@@ -303,6 +308,7 @@ export class CollabStage implements CollabApi {
         placedHere: this.placedHere.has(p.id),
         pinnedHere: this.placedHere.get(p.id)?.pinned ?? false,
         ...(p.error ? { error: p.error } : {}),
+        ...(p.refusedYours ? { refusedYours: p.refusedYours } : {}),
       })),
       knocks: [...s.knocks.values()].map((k) => ({ ...k })),
       wrongPasswords: s.wrongPasswords,

@@ -1,4 +1,5 @@
 import {
+  checkArchiveFileSize,
   fileSetFromFiles,
   fileSetFromZip,
   type FileLike,
@@ -43,8 +44,13 @@ export function framesOf(
   };
 }
 
-export async function fromZipFile(file: File): Promise<ModelFileSet> {
-  return fileSetFromZip(file.name, new Uint8Array(await file.arrayBuffer()));
+/**
+ * A zip chosen or dropped: a model, or with `what` "This item" an item. A
+ * file larger than the caps allow is refused before it is read.
+ */
+export async function fromZipFile(file: File, what = 'This model'): Promise<ModelFileSet> {
+  checkArchiveFileSize(file.size, undefined, what);
+  return fileSetFromZip(file.name, new Uint8Array(await file.arrayBuffer()), undefined, what);
 }
 
 /** A dropped folder, zip or set of files. */

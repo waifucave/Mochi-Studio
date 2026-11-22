@@ -21,6 +21,8 @@ export interface CollabPersonState {
   placedHere: boolean;
   pinnedHere: boolean;
   error?: string;
+  /** They refused the model this app shared with them, and why. */
+  refusedYours?: string;
 }
 
 export interface CollabState {

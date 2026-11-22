@@ -74,25 +74,44 @@ export function downloadText(
 }
 
 /** Lets the user pick a file and returns its bytes. */
-export function readFileBytes(accept: string): Promise<Uint8Array | undefined> {
-  return new Promise((res) => {
+/** A chosen file refused for its size, with a message for people. */
+export class FileTooLargeError extends Error {}
+
+/**
+ * A file the person chooses, as bytes. One larger than `max` is refused
+ * (the promise rejects with `tooLarge`'s message) before it is read.
+ */
+export function readFileBytes(
+  accept: string,
+  max = Infinity,
+  tooLarge: (size: number) => string = () => 'The file is too large.',
+): Promise<Uint8Array | undefined> {
+  return new Promise((res, rej) => {
     const input = h('input', { type: 'file', accept });
     input.addEventListener('change', () => {
       const f = input.files?.[0];
       if (!f) return res(undefined);
-      void f.arrayBuffer().then((b) => res(new Uint8Array(b)));
+      if (f.size > max) return rej(new FileTooLargeError(tooLarge(f.size)));
+      void f.arrayBuffer().then((b) => res(new Uint8Array(b)), rej);
     });
     input.click();
   });
 }
 
-export function readFileText(accept: string): Promise<string | undefined> {
-  return new Promise((res) => {
+/** As `readFileBytes`, as text. */
+export function readFileText(
+  accept: string,
+  max = Infinity,
+  tooLarge: (size: number) => string = () => 'The file is too large.',
+): Promise<string | undefined> {
+  return new Promise((res, rej) => {
     const input = h('input', { type: 'file', accept });
-    input.addEventListener(
-      'change',
-      () => void (input.files?.[0]?.text() ?? Promise.resolve(undefined)).then(res),
-    );
+    input.addEventListener('change', () => {
+      const f = input.files?.[0];
+      if (!f) return res(undefined);
+      if (f.size > max) return rej(new FileTooLargeError(tooLarge(f.size)));
+      void f.text().then(res, rej);
+    });
     input.click();
   });
 }

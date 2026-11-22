@@ -3,7 +3,12 @@
  * files from the app's bridge (`/disk/<id>/…`, with its host token); output
  * views read them from disk through the bridge too, so nothing is uploaded.
  */
-import { RootedFileSet, fileSetFromZip, type ModelFileSet } from '../core/modelFiles';
+import {
+  checkArchiveFileSize,
+  RootedFileSet,
+  fileSetFromZip,
+  type ModelFileSet,
+} from '../core/modelFiles';
 import type { PointerSample } from '../core/mouseInput';
 import type { WebItemSource } from '../core/webItems';
 import type { SpoutConfig, SpoutState } from '../core/spout';
@@ -27,10 +32,15 @@ export interface RecentModel {
 }
 
 /** A zip opened with the app's file dialog: its bytes, read by the page. */
-interface OpenedZip {
-  zip: Uint8Array;
-  label: string;
-  dir: string;
+type OpenedZip = { label: string; dir: string } & (
+  | { zip: Uint8Array }
+  /** The zip's size, when it is too large to be read at all. */
+  | { tooLarge: number }
+);
+
+function zipFileSet(f: OpenedZip): ModelFileSet {
+  if ('tooLarge' in f) checkArchiveFileSize(f.tooLarge);
+  return fileSetFromZip(f.label, (f as { zip: Uint8Array }).zip);
 }
 
 interface DesktopApi {
@@ -186,12 +196,12 @@ export async function openRecentFolder(
   if (!api) throw new Error('Recent models are part of the desktop app.');
   const f = await api.openRecent(r.path);
   if ('error' in f) throw new Error(recentProblem(r, f.error));
-  if ('zip' in f) return remember(fileSetFromZip(f.label, f.zip), f.dir);
+  if ('zip' in f || 'tooLarge' in f) return remember(zipFileSet(f), f.dir);
   return remember(new DiskFileSet(f.id, f.label, f.paths, bridgeHttp, token), f.dir);
 }
 
 /** Opens a zip with the app's file dialog (remembered as a recent model); undefined when cancelled. */
 export async function openDesktopZip(): Promise<ModelFileSet | undefined> {
   const f = await desktopApi()?.openZip();
-  return f ? remember(fileSetFromZip(f.label, f.zip), f.dir) : undefined;
+  return f ? remember(zipFileSet(f), f.dir) : undefined;
 }

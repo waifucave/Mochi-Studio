@@ -28,6 +28,7 @@ import { BridgeStore } from '../bridge/src/store.ts';
 import { DEFAULT_PORT, type CommandInfoWire } from '../src/core/bridgeProtocol.ts';
 import { isZipPath, RecentModels, recentState } from './recent.ts';
 import { isOwnAddress, parseWebItem } from '../src/core/webItems.ts';
+import { maxArchiveFileBytes, MODEL_ARCHIVE_LIMITS } from '../src/core/archiveLimits.ts';
 import { parseSpoutConfig } from '../src/core/spout.ts';
 import { SpoutOutputs, loadSpoutAddon } from './spout.ts';
 import { parseVirtualCameraConfig } from '../src/core/virtualCamera.ts';
@@ -109,8 +110,12 @@ async function start(): Promise<void> {
   // Recent folders: the page may reopen only folders on the list.
   ipcMain.handle('mochi:recent-models', (e) => (own(e.senderFrame?.url) ? recent.list() : []));
   // Zips: the page reads the bytes (as for a zip it is given); views get uploads.
+  // A zip larger than any the page would accept isn't read into memory.
   const serveZip = (path: string) => {
     recent.add(path);
+    const size = statSync(path).size;
+    if (size > maxArchiveFileBytes(MODEL_ARCHIVE_LIMITS))
+      return { tooLarge: size, label: basename(path), dir: path };
     return { zip: new Uint8Array(readFileSync(path)), label: basename(path), dir: path };
   };
   ipcMain.handle('mochi:open-zip', async (e) => {

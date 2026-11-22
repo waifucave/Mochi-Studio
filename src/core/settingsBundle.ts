@@ -1,6 +1,14 @@
 import { zipSync } from 'fflate';
 import { sourceFromZip } from 'mochi2d/headless';
+import {
+  fileTooLargeMessage,
+  formatBytes,
+  maxArchiveFileBytes,
+  MAX_SETTINGS_JSON_BYTES,
+  SETTINGS_ARCHIVE_LIMITS,
+} from './archiveLimits';
 import { newItemId } from './items';
+import { describeArchiveError } from './modelFiles';
 import { SettingsError, importSettings, type ModelSettings } from './settings';
 
 /**
@@ -20,7 +28,21 @@ export function buildSettingsBundle(
   };
   for (const item of items)
     for (const [path, data] of item.files) entries[`items/${item.id}/${path}`] = data;
-  return zipSync(entries, { level: 6 });
+  // Never write a file that the import would refuse.
+  const caps = SETTINGS_ARCHIVE_LIMITS;
+  const sizes = Object.values(entries).map((d) => d.length);
+  const total = sizes.reduce((a, b) => a + b, 0);
+  const largest = Math.max(...sizes);
+  if (sizes.length > caps.maxEntries || total > caps.maxTotalBytes || largest > caps.maxEntryBytes)
+    throw new SettingsError(
+      `The items are too large to export with the settings (${formatBytes(total)} in ${sizes.length} files; the most is ${formatBytes(caps.maxTotalBytes)} in ${caps.maxEntries} files, ${formatBytes(caps.maxEntryBytes)} a file). Export without the item files.`,
+    );
+  const zip = zipSync(entries, { level: 6 });
+  if (zip.length > maxArchiveFileBytes(caps))
+    throw new SettingsError(
+      `The settings file would be too large to import again (${formatBytes(zip.length)}). Export without the item files.`,
+    );
+  return zip;
 }
 
 export interface ImportedBundle {
@@ -41,26 +63,48 @@ export async function readSettingsExport(
   modelKey: string,
   takenIds: Iterable<string> = [],
 ): Promise<ImportedBundle> {
-  if (!isZip(data))
+  const what = 'This settings file';
+  if (!isZip(data)) {
+    if (data.length > MAX_SETTINGS_JSON_BYTES)
+      throw new SettingsError(fileTooLargeMessage(what, data.length, MAX_SETTINGS_JSON_BYTES));
     return {
       settings: importSettings(new TextDecoder().decode(data), modelKey),
       itemFiles: new Map(),
     };
+  }
+  const caps = SETTINGS_ARCHIVE_LIMITS;
+  if (data.length > maxArchiveFileBytes(caps))
+    throw new SettingsError(fileTooLargeMessage(what, data.length, maxArchiveFileBytes(caps)));
+  const refuse = (e: unknown): SettingsError =>
+    e instanceof SettingsError
+      ? e
+      : new SettingsError(
+          describeArchiveError(e, what)?.message ?? 'The file is not a readable zip.',
+        );
   let zip: ReturnType<typeof sourceFromZip>;
   try {
-    zip = sourceFromZip('settings', data);
-  } catch {
-    throw new SettingsError('The file is not a readable zip.');
+    zip = sourceFromZip('settings', data, caps);
+  } catch (e) {
+    throw refuse(e);
   }
+  const read = async (p: string): Promise<Uint8Array> => {
+    try {
+      return await zip.read(p);
+    } catch (e) {
+      throw refuse(e);
+    }
+  };
   const paths = zip.list() ?? [];
   if (!paths.includes(SETTINGS_ENTRY))
     throw new SettingsError(
       `The zip has no ${SETTINGS_ENTRY}: not a Mochi Studio settings export.`,
     );
-  const settings = importSettings(
-    new TextDecoder().decode(await zip.read(SETTINGS_ENTRY)),
-    modelKey,
-  );
+  const json = await read(SETTINGS_ENTRY);
+  if (json.length > MAX_SETTINGS_JSON_BYTES)
+    throw new SettingsError(
+      `${what} is larger than we accept. Its settings are ${formatBytes(json.length)}; the most is ${formatBytes(MAX_SETTINGS_JSON_BYTES)}.`,
+    );
+  const settings = importSettings(new TextDecoder().decode(json), modelKey);
 
   const taken = new Set(takenIds);
   const rename = new Map<string, string>();
@@ -76,7 +120,7 @@ export async function readSettingsExport(
     const id = rename.get(m[1]!);
     if (!id) continue;
     const list = itemFiles.get(id) ?? [];
-    list.push([m[2]!, await zip.read(p)]);
+    list.push([m[2]!, await read(p)]);
     itemFiles.set(id, list);
   }
   const newId = (id: string) => rename.get(id) ?? id;

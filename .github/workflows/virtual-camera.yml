@@ -66,11 +66,23 @@ jobs:
               Set-ItemProperty -Path $key -Name Value -Value Allow
             }
           }
-      - name: ffmpeg (for the DirectShow reads)
+      # One build of ffmpeg, always the same: a versioned release, checked by
+      # its SHA-256 before it is unpacked, and first on the PATH (ahead of any
+      # ffmpeg the runner image has).
+      - name: ffmpeg 7.1.1 (for the DirectShow reads)
         shell: pwsh
+        env:
+          FFMPEG_URL: https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip
+          FFMPEG_SHA256: 04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4
         run: |
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress }
-          ffmpeg -hide_banner -version | Select-Object -First 1
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile $zip
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($hash -ne $env:FFMPEG_SHA256) { throw "The ffmpeg download's SHA-256 is $hash, not $env:FFMPEG_SHA256." }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          $bin = Join-Path $env:RUNNER_TEMP 'ffmpeg-7.1.1-essentials_build\bin'
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          & (Join-Path $bin 'ffmpeg.exe') -hide_banner -version | Select-Object -First 1
       - name: The camera, read by a DirectShow app
         run: npx vitest run --project unit test/unit/wincam.test.ts
         env:

@@ -199,7 +199,12 @@ for frame-by-frame effects.
   place), so even a relay never holds usable bytes.
 - **Kept** in memory only, never on disk, and deleted when the sender
   leaves or is removed, or the session ends.
-- **Limits:** 300 MB a model. Larger models always go as video.
+- **Limits:** 300 MB a model in all, 32 MB a file and 500 files. A model
+  over any of them always goes as video, and the sender's Collab tab says
+  which limit. Each app checks a model's list of files against the same
+  limits before it sets any memory aside for them. If one refuses it, it
+  says why, **too large** or **damaged**, and the sender's list shows
+  the reason beside that person's name.
 - **No file server:** the sender pays the upload once per receiver, and no
   third party holds the files.
 - **What memory-only can't stop:** a participant with the right tools

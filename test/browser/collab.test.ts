@@ -419,26 +419,129 @@ describe('collaboration, with the local signaling server', () => {
     }
   });
 
-  it('refuses a shared model over 300 MB', async () => {
+  it('checks a shared model’s announcement before setting memory aside, and tells the sender', async () => {
+    const MB = 2 ** 20;
     const u = (await person(host, 'Ume'))!;
-    const error = await host.evaluate((id) => {
-      const s = (window as any).mochiCollab.session;
-      s.ctlMessage(
-        id,
-        JSON.stringify({
-          t: 'model',
-          serial: 99,
-          name: 'Big',
-          mode: 'shared',
-          table: [],
-          neverSmoothed: [],
-          files: [{ path: 'big.moc3', size: 400 * 1024 * 1024 }],
-          bytes: 400 * 1024 * 1024,
-        }),
+    // Crafted announcements, as from someone else's app: refused before any buffer is made.
+    const refuse = (files: unknown, bytes: unknown) =>
+      host.evaluate(
+        ({ id, files, bytes }) => {
+          const s = (window as any).mochiCollab.session;
+          s.ctlMessage(
+            id,
+            JSON.stringify({
+              t: 'model',
+              serial: 99,
+              name: 'Crafted',
+              mode: 'shared',
+              table: [],
+              neverSmoothed: [],
+              files,
+              bytes,
+            }),
+          );
+          return { error: s.participants.get(id).error as string, receiving: s.incoming.has(id) };
+        },
+        { id: u.id, files, bytes },
       );
-      return s.participants.get(id).error;
-    }, u.id);
-    expect(error).toMatch(/over 300 MB/);
+    const tooLarge = /^Their model is larger than we accept, so it isn’t shared\./;
+    const damaged = /^Their model arrived damaged, so it isn’t shared\./;
+    const cases: Array<[unknown, unknown, RegExp, RegExp]> = [
+      // Over 300 MB in all, in files within the per-file cap.
+      [
+        Array.from({ length: 10 }, (_, i) => ({ path: `t${i}.png`, size: 31 * MB })),
+        310 * MB,
+        tooLarge,
+        /come to 310 MB; the most in all is 300 MB/,
+      ],
+      // One file over the per-file cap.
+      [
+        [{ path: 'big.moc3', size: 400 * MB }],
+        400 * MB,
+        tooLarge,
+        /“big\.moc3” is 400 MB; the most for one file is 32 MB/,
+      ],
+      // Too many files.
+      [
+        Array.from({ length: 501 }, (_, i) => ({ path: `f${i}`, size: 1 })),
+        501,
+        tooLarge,
+        /501 files; the most is 500/,
+      ],
+      // A small total over a huge file: the sizes must add up.
+      [[{ path: 'a.png', size: 30 * MB }], 1, damaged, /don’t add up/],
+      // Sizes that are not whole, or negative; a name twice; no list.
+      [[{ path: 'a.png', size: 1.5 }], 1.5, damaged, /no usable size/],
+      [[{ path: 'a.png', size: -1 }], -1, damaged, /no usable size/],
+      [
+        [
+          { path: 'a', size: 1 },
+          { path: 'a', size: 1 },
+        ],
+        2,
+        damaged,
+        /listed twice/,
+      ],
+      ['nope', 0, damaged, /missing/],
+    ];
+    for (const [files, bytes, kind, detail] of cases) {
+      const r = await refuse(files, bytes);
+      expect(r.error).toMatch(kind);
+      expect(r.error).toMatch(detail);
+      expect(r.receiving).toBe(false);
+    }
+
+    // From a real participant's app: Kiri's own announcement, with one file's size altered.
+    // Hana refuses it, and Kiri's list says why beside Hana's name.
+    const hana = (await person(guest, 'Hana'))!;
+    await guest.evaluate((hostId) => {
+      const s = (window as any).mochiCollab.session;
+      const a = s.announced;
+      const files = a.files.map((f: any, i: number) =>
+        i ? f : { ...f, size: f.size + 40 * 2 ** 20 },
+      );
+      const l = s.links.get(hostId);
+      l.send(l.ctl, JSON.stringify({ ...a, files, bytes: a.bytes + 40 * 2 ** 20 }));
+    }, hana.id);
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.error, { timeout: 15_000 })
+      .toMatch(tooLarge);
+    await expect
+      .poll(
+        () =>
+          guest.evaluate(
+            (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+            hana.id,
+          ),
+        { timeout: 15_000 },
+      )
+      .toMatch(
+        /^Your model is larger than their app accepts, so they don’t have it\. .* the most for one file is 32 MB\.$/,
+      );
+    // The list shows it too.
+    await expect
+      .poll(() => guest.evaluate(() => (window as any).mochiCollab.state().people), {
+        timeout: 15_000,
+      })
+      .toContainEqual(expect.objectContaining({ name: 'Hana', refusedYours: expect.any(String) }));
+
+    // Announcing again (as after loading the model again) sends the real one: Hana has it again.
+    await guest.evaluate(() => (window as any).mochiCollab.session.announce());
+    await expect
+      .poll(
+        async () => {
+          const k = await person(host, 'Kiri');
+          return !k?.error && (k?.files ?? 0) > 0;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    expect(
+      await guest.evaluate(
+        (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+        hana.id,
+      ),
+    ).toBeUndefined();
   });
 
   it('comes back after a dropped connection to the server, host and guest, without losing anyone', async () => {

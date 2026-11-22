@@ -39,7 +39,14 @@ import {
   type Member,
   type ServerMessage,
 } from '../../core/collab/protocol';
+import {
+  checkSharedAnnouncement,
+  refusalForReceiver,
+  refusalForSender,
+  type SharedRefusal,
+} from '../../core/collab/sharedModel';
 import { frontStamp, type FrontStamp, type StagePlace } from '../../core/collab/stage';
+import { SHARED_MODEL_LIMITS } from '../../core/archiveLimits';
 import {
   decodeParams,
   encodeParams,
@@ -63,8 +70,8 @@ export interface ChatMessage {
   me: boolean;
 }
 
-/** The most a shared model (or item) may weigh. */
-export const MAX_SHARED_BYTES = 300 * 1024 * 1024;
+/** The most a shared model (or item) may weigh (src/core/archiveLimits.ts). */
+export const MAX_SHARED_BYTES = SHARED_MODEL_LIMITS.maxTotalBytes;
 /** Plain bytes per encrypted file chunk. */
 const CHUNK = 16 * 1024;
 const FILES_KIND = 2;
@@ -123,6 +130,8 @@ export interface Participant {
   /** Smoothing delay, ms (local only). */
   delayMs: number;
   error?: string;
+  /** They refused the model this app shared with them, and why (for this app's list). */
+  refusedYours?: string;
 }
 
 export interface Knock {
@@ -667,6 +676,7 @@ export class CollabSession {
   /** This app's model changed (or its sharing): tell everyone. */
   async announce(): Promise<void> {
     this.serial++;
+    for (const p of this.participants.values()) p.refusedYours = undefined;
     this.announced = await this.o.local.announcement(this.serial);
     this.sender = this.announced ? new ParamSender(this.announced.table) : undefined;
     for (const peer of this.links.keys()) await this.announceTo(peer);
@@ -736,21 +746,39 @@ export class CollabSession {
           break;
         }
         const a = m as unknown as ModelAnnouncement;
-        if (!Array.isArray(a.table) || !Array.isArray(a.files)) break;
+        if (!Array.isArray(a.table)) break;
+        if (!Array.isArray(a.files)) {
+          // Not an announcement this app can use; a shared one is refused in so many words.
+          const refused = a.mode === 'shared' && checkSharedAnnouncement(a.files, a.bytes);
+          if (refused) this.refuse(p, a.serial, refused);
+          break;
+        }
         p.model = a;
         p.params = new RemoteParams(a.table, a.neverSmoothed ?? []);
         p.error = undefined;
         if (a.mode === 'shared') {
-          if (a.bytes > MAX_SHARED_BYTES)
-            p.error = 'Their model is over 300 MB, so it isn’t shared.';
-          else
+          // Checked before any memory is set aside for the files.
+          const refused = checkSharedAnnouncement(a.files, a.bytes);
+          if (refused) this.refuse(p, a.serial, refused);
+          else {
             this.incoming.set(peer, {
               serial: a.serial,
               data: a.files.map((f) => new Uint8Array(f.size)),
               left: a.bytes,
             });
-          if (a.bytes === 0) this.filesDone(p);
+            if (a.bytes === 0) this.filesDone(p);
+          }
         }
+        break;
+      }
+      case 'refused': {
+        // They didn't take the model this app shared: say so beside their name.
+        const problem = m.problem === 'too-large' ? 'too-large' : 'damaged';
+        if (m.serial !== this.announced?.serial || this.announced?.mode !== 'shared') break;
+        p.refusedYours = refusalForSender({
+          problem,
+          detail: typeof m.detail === 'string' ? m.detail.slice(0, 300) : '',
+        });
         break;
       }
       case 'place':
@@ -801,8 +829,11 @@ export class CollabSession {
     if (serial !== inc.serial || !inc.data[i]) return;
     const plain = await decryptBytes(this.keys.files, b.subarray(11), chunkAad(serial, i, off));
     if (!plain || off + plain.length > inc.data[i]!.length) {
-      p.error = 'A file of their model arrived damaged.';
       this.incoming.delete(peer);
+      this.refuse(p, serial, {
+        problem: 'damaged',
+        detail: `A piece of “${p.model?.files[i]?.path ?? 'a file'}” didn’t match.`,
+      });
       this.listener.changed();
       return;
     }
@@ -811,6 +842,13 @@ export class CollabSession {
     p.received += plain.length;
     if (inc.left <= 0 && this.incoming.get(peer) === inc) this.filesDone(p);
     else if (p.received % (CHUNK * 64) < CHUNK) this.listener.changed();
+  }
+
+  /** Refuses a participant's shared model: tells this app's list, and them. */
+  private refuse(p: Participant, serial: number, r: SharedRefusal): void {
+    p.error = refusalForReceiver(r);
+    const l = this.links.get(p.id);
+    l?.send(l.ctl, JSON.stringify({ t: 'refused', serial, problem: r.problem, detail: r.detail }));
   }
 
   private filesDone(p: Participant): void {

@@ -9,6 +9,7 @@
  *
  * Double-clicking (or double-tapping) the stage elsewhere opens the main menu.
  */
+import { MAX_PICTURE_FILE_BYTES, pictureTooLarge } from '../core/archiveLimits';
 import { imageItemFiles } from '../core/imageItem';
 import { canvasPng, pngContext } from './canvasPng';
 import { gifItem, isAnimatedGif } from './animatedItems';
@@ -71,9 +72,13 @@ export async function toPng(
 /** Adds an image file as an item (in the middle of the stage, ready to be pinned). */
 export async function addImageItem(studio: Studio, file: File): Promise<string> {
   const name = file.name.replace(IMAGE_NAMES, '') || 'Image';
+  // Its size from its header, before the browser decodes it (at any size it declares).
+  const bytes =
+    file.size <= MAX_PICTURE_FILE_BYTES ? new Uint8Array(await file.arrayBuffer()) : undefined;
+  const refused = pictureTooLarge(file.size, bytes);
+  if (refused || !bytes) throw new Error(refused);
   // An animated GIF becomes an animated item; a still one, a picture.
   if (/\.gif$/i.test(file.name) || file.type === 'image/gif') {
-    const bytes = new Uint8Array(await file.arrayBuffer());
     if (isAnimatedGif(bytes))
       return studio.addItem(new MemoryFileSet(name, (await gifItem(bytes, name)).files), {
         file: file.name,

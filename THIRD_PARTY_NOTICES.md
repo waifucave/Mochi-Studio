@@ -78,7 +78,7 @@ bundles; a test checks that it is up to date.
 | merge-descriptors                                  | 2.0.0                                                       | MIT          | bridge                                       |
 | mime-db                                            | 1.54.0                                                      | MIT          | bridge                                       |
 | mime-types                                         | 3.0.2                                                       | MIT          | bridge                                       |
-| mochi2d                                            | 0.21.0                                                      | MIT          | pages                                        |
+| mochi2d                                            | 0.23.0                                                      | MIT          | pages                                        |
 | ms                                                 | 2.1.3                                                       | MIT          | bridge                                       |
 | negotiator                                         | 1.1.0                                                       | MIT          | bridge                                       |
 | object-assign                                      | 4.1.1                                                       | MIT          | bridge                                       |
@@ -1943,7 +1943,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## mochi2d 0.21.0
+## mochi2d 0.23.0
 
 - **License:** MIT
 - **In:** the app’s pages
@@ -3299,7 +3299,7 @@ Apache License
 
 ## Mochi2D's own notices
 
-Mochi2D 0.21.0 lists the third-party code it includes:
+Mochi2D 0.23.0 lists the third-party code it includes:
 
 ### Third-party notices
 
