@@ -14,9 +14,12 @@ import type { ArchiveLimits } from 'mochi2d/headless';
  *   per-file cap; and the same total, which the export checks too, so the
  *   app never writes a file it would refuse to read.
  * - **A shared model** from another participant: the tightest, 32 MB a
- *   file and 500 files (the caps Mochi2D gives for phones), and 300 MB in
- *   all, the limit the collaboration has always had. The sender checks
- *   the same caps, so only a crafted announcement is refused.
+ *   file and 500 files (the caps Mochi2D gives for phones), and 160 MB in
+ *   all: twice the largest model measured. Its textures may declare at
+ *   most 8192 pixels a side and 64 Mi pixels together (one texture of
+ *   8192 × 8192, or four of 4096 × 4096: 256 MB once decoded). And one app
+ *   holds at most 600 MB of others' shared models at once. The sender
+ *   checks the same caps, so only a crafted announcement is refused.
  *
  * An archive at its caps costs at most about twice its per-file cap at
  * once, and its total over its life.
@@ -33,9 +36,18 @@ export const SETTINGS_ARCHIVE_LIMITS: Readonly<Required<ArchiveLimits>> = MODEL_
 
 export const SHARED_MODEL_LIMITS: Readonly<Required<ArchiveLimits>> = Object.freeze({
   maxEntryBytes: 32 * MB,
-  maxTotalBytes: 300 * MB,
+  maxTotalBytes: 160 * MB,
   maxEntries: 500,
 });
+
+/** A shared model's textures, from their headers, before anything decodes them. */
+export const SHARED_TEXTURE_LIMITS = Object.freeze({
+  maxSide: 8192,
+  maxPixels: 8192 * 8192,
+});
+
+/** What one app holds of others' shared models at once, all participants together. */
+export const SHARED_HELD_BYTES = 600 * MB;
 
 /**
  * A plain settings file (JSON), or one inside a settings export: settings

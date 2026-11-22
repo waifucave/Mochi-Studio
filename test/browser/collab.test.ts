@@ -447,12 +447,12 @@ describe('collaboration, with the local signaling server', () => {
     const tooLarge = /^Their model is larger than we accept, so it isn’t shared\./;
     const damaged = /^Their model arrived damaged, so it isn’t shared\./;
     const cases: Array<[unknown, unknown, RegExp, RegExp]> = [
-      // Over 300 MB in all, in files within the per-file cap.
+      // Over 160 MB in all, in files within the per-file cap.
       [
-        Array.from({ length: 10 }, (_, i) => ({ path: `t${i}.png`, size: 31 * MB })),
-        310 * MB,
+        Array.from({ length: 10 }, (_, i) => ({ path: `t${i}.png`, size: 17 * MB })),
+        170 * MB,
         tooLarge,
-        /come to 310 MB; the most in all is 300 MB/,
+        /come to 170 MB; the most in all is 160 MB/,
       ],
       // One file over the per-file cap.
       [
@@ -542,6 +542,179 @@ describe('collaboration, with the local signaling server', () => {
         hana.id,
       ),
     ).toBeUndefined();
+  });
+
+  it('checks a shared model’s textures by their headers before it shows it, and tells the sender', async () => {
+    const hana = (await person(guest, 'Hana'))!;
+    // Kiri's app sends its texture with a header altered on the way (as a crafted app could):
+    // 9000 pixels wide, the file's size unchanged.
+    await guest.evaluate(() => {
+      const s = (window as any).mochiCollab.session;
+      const read = s.o.local.readFile;
+      (window as any).realReadFile = read;
+      s.o.local.readFile = async (path: string) => {
+        const d: Uint8Array = await read(path);
+        if (!path.endsWith('.png')) return d;
+        const c = d.slice();
+        new DataView(c.buffer).setUint32(16, 9000);
+        return c;
+      };
+      return s.announce();
+    });
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.error, { timeout: 30_000 })
+      .toMatch(
+        /^Their model is larger than we accept, so it isn’t shared\. Its texture “.*\.png” is 9,000 × \d[\d,]* pixels; the most is 8,192 a side\.$/,
+      );
+    expect((await person(host, 'Kiri'))!.files).toBe(0);
+    await expect
+      .poll(
+        () =>
+          guest.evaluate(
+            (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+            hana.id,
+          ),
+        { timeout: 15_000 },
+      )
+      .toMatch(/^Your model is larger than their app accepts, so they don’t have it\. Its texture/);
+    // Sent as it is, it is shown again.
+    await guest.evaluate(() => {
+      const s = (window as any).mochiCollab.session;
+      s.o.local.readFile = (window as any).realReadFile;
+      return s.announce();
+    });
+    await expect
+      .poll(
+        async () => {
+          const k = await person(host, 'Kiri');
+          return !k?.error && (k?.files ?? 0) > 0;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+  });
+
+  it('holds at most 600 MB of others’ shared models: the newest waits, says so, and comes when there is room', async () => {
+    const MB = 2 ** 20;
+    const kiri = (await person(host, 'Kiri'))!;
+    const ume = (await person(host, 'Ume'))!;
+    const hana = (await person(guest, 'Hana'))!;
+    // Four more participants on Hana's screen, as if from four more apps, each announcing a
+    // shared model of 150 MB (five files of 30 MB, within the caps).
+    const fakes = ['fake-1', 'fake-2', 'fake-3', 'fake-4'];
+    const announce = (id: string) =>
+      host.evaluate(
+        ({ id, kiriId, MB }) => {
+          const s = (window as any).mochiCollab.session;
+          if (!s.participants.has(id)) {
+            const base = s.participants.get(kiriId);
+            s.participants.set(id, {
+              ...base,
+              id,
+              name: id,
+              model: undefined,
+              params: undefined,
+              files: undefined,
+              received: 0,
+              error: undefined,
+            });
+          }
+          s.ctlMessage(
+            id,
+            JSON.stringify({
+              t: 'model',
+              serial: 1,
+              name: id,
+              mode: 'shared',
+              table: [],
+              neverSmoothed: [],
+              files: Array.from({ length: 5 }, (_, i) => ({ path: `f${i}.bin`, size: 30 * MB })),
+              bytes: 150 * MB,
+            }),
+          );
+          const p = s.participants.get(id);
+          return { error: p.error as string | undefined, receiving: s.incoming.has(id) };
+        },
+        { id, kiriId: kiri.id, MB },
+      );
+    const held = () =>
+      host.evaluate(() => (window as any).mochiCollab.session.heldBytes() as number);
+    const kiriBytes = await held();
+    expect(kiriBytes).toBeGreaterThan(0);
+    for (const id of fakes.slice(0, 3))
+      expect(await announce(id)).toEqual({ error: undefined, receiving: true });
+    expect(await held()).toBe(kiriBytes + 450 * MB);
+    // The fourth doesn't fit (600 MB and Kiri's model): refused before anything is set aside.
+    const fourth = await announce('fake-4');
+    expect(fourth.receiving).toBe(false);
+    expect(fourth.error).toMatch(
+      /^There is no room for their model now\. This app holds 450 MB of others’ models already, and 600 MB at most; this one is 150 MB\./,
+    );
+    expect(await held()).toBe(kiriBytes + 450 * MB);
+
+    // Video-only still works for everyone at the cap: Ume announces again and is shown.
+    await third.evaluate(() => (window as any).mochiCollab.session.announce());
+    await expect
+      .poll(async () => (await person(host, 'Ume'))?.mode, { timeout: 15_000 })
+      .toBe('video');
+    expect((await person(host, 'Ume'))!.error).toBeUndefined();
+    await expect
+      .poll(
+        async () =>
+          (await collabItems(host)).some((i: { id: string }) => i.id === `collab:${ume.id}`),
+        {
+          timeout: 30_000,
+        },
+      )
+      .toBe(true);
+
+    // Kiri loads their model again: their old one goes, so fake-4 (waiting) takes the room,
+    // and Kiri's new one is the newest: it waits, and Kiri is told.
+    await guest.evaluate(() => (window as any).mochiCollab.session.announce());
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.error, { timeout: 15_000 })
+      .toMatch(/^There is no room for their model now\./);
+    expect(
+      await host.evaluate(() => (window as any).mochiCollab.session.incoming.has('fake-4')),
+    ).toBe(true);
+    await expect
+      .poll(
+        () =>
+          guest.evaluate(
+            (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+            hana.id,
+          ),
+        { timeout: 15_000 },
+      )
+      .toBe(
+        'Their app has no room for your model now. It goes to them by itself when there is room.',
+      );
+
+    // fake-1 leaves: its room goes to Kiri, whose app sends the files again; both lists clear.
+    await host.evaluate(() => (window as any).mochiCollab.session.dropParticipant('fake-1'));
+    await expect
+      .poll(
+        async () => {
+          const k = await person(host, 'Kiri');
+          return !k?.error && (k?.files ?? 0) > 0;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    expect(
+      await guest.evaluate(
+        (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+        hana.id,
+      ),
+    ).toBeUndefined();
+    expect(await held()).toBe(kiriBytes + 450 * MB);
+
+    // The others leave too: nothing of theirs is held.
+    await host.evaluate((ids) => {
+      const s = (window as any).mochiCollab.session;
+      for (const id of ids) s.dropParticipant(id);
+    }, fakes.slice(1));
+    expect(await held()).toBe(kiriBytes);
   });
 
   it('comes back after a dropped connection to the server, host and guest, without losing anyone', async () => {

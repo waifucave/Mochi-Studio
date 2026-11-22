@@ -41,8 +41,10 @@ import {
 } from '../../core/collab/protocol';
 import {
   checkSharedAnnouncement,
+  checkSharedTextures,
   refusalForReceiver,
   refusalForSender,
+  sharedRoom,
   type SharedRefusal,
 } from '../../core/collab/sharedModel';
 import { frontStamp, type FrontStamp, type StagePlace } from '../../core/collab/stage';
@@ -176,6 +178,8 @@ class PeerLink {
   private pending: RTCIceCandidateInit[] = [];
   private session: CollabSession;
   readonly peer: string;
+  /** The serial of this app's model that they refused: its files stop going to them. */
+  refusedSerial: number | undefined;
 
   constructor(session: CollabSession, peer: string, config: RTCConfiguration, offer: boolean) {
     this.session = session;
@@ -707,7 +711,12 @@ export class CollabSession {
     for (let i = 0; i < a.files.length; i++) {
       const data = await this.o.local.readFile(a.files[i]!.path);
       for (let off = 0; off < data.length || (off === 0 && data.length === 0); off += CHUNK) {
-        if (this.announced?.serial !== a.serial || l.files.readyState !== 'open') return;
+        if (
+          this.announced?.serial !== a.serial ||
+          l.files.readyState !== 'open' ||
+          l.refusedSerial === a.serial
+        )
+          return;
         const plain = data.subarray(off, off + CHUNK);
         const enc = await encryptBytes(keys.files, plain, chunkAad(a.serial, i, off));
         const packet = new Uint8Array(11 + enc.length);
@@ -757,28 +766,39 @@ export class CollabSession {
         p.params = new RemoteParams(a.table, a.neverSmoothed ?? []);
         p.error = undefined;
         if (a.mode === 'shared') {
-          // Checked before any memory is set aside for the files.
-          const refused = checkSharedAnnouncement(a.files, a.bytes);
-          if (refused) this.refuse(p, a.serial, refused);
-          else {
-            this.incoming.set(peer, {
-              serial: a.serial,
-              data: a.files.map((f) => new Uint8Array(f.size)),
-              left: a.bytes,
-            });
-            if (a.bytes === 0) this.filesDone(p);
-          }
+          // Checked before any memory is set aside for the files: the caps, then the room
+          // left beside the others' models.
+          const refused =
+            checkSharedAnnouncement(a.files, a.bytes) ?? sharedRoom(this.heldBytes(), a.bytes);
+          if (refused) {
+            this.refuse(p, a.serial, refused);
+            // Without room, it waits: it comes when another model goes.
+            if (refused.problem === 'no-room') this.waiting.set(peer, a.serial);
+          } else this.receive(p, a);
         }
         break;
       }
       case 'refused': {
         // They didn't take the model this app shared: say so beside their name.
-        const problem = m.problem === 'too-large' ? 'too-large' : 'damaged';
+        const problem =
+          m.problem === 'too-large' || m.problem === 'no-room' ? m.problem : 'damaged';
         if (m.serial !== this.announced?.serial || this.announced?.mode !== 'shared') break;
         p.refusedYours = refusalForSender({
           problem,
           detail: typeof m.detail === 'string' ? m.detail.slice(0, 300) : '',
         });
+        const l = this.links.get(peer);
+        if (l) l.refusedSerial = this.announced.serial;
+        break;
+      }
+      case 'resend': {
+        // They have room now: the files go again.
+        const a = this.announced;
+        const l = this.links.get(peer);
+        if (!a || a.mode !== 'shared' || m.serial !== a.serial || !l) break;
+        p.refusedYours = undefined;
+        l.refusedSerial = undefined;
+        void this.sendFiles(l, a);
         break;
       }
       case 'place':
@@ -817,6 +837,52 @@ export class CollabSession {
   }
 
   private incoming = new Map<string, { serial: number; data: Uint8Array[]; left: number }>();
+  /** Bytes set aside for each participant's shared model: arriving, checked or shown. */
+  private held = new Map<string, number>();
+  /** Shared models refused for want of room, by participant, oldest first: their serial. */
+  private waiting = new Map<string, number>();
+
+  /** What this app holds of the others' shared models, all together. */
+  heldBytes(): number {
+    let n = 0;
+    for (const b of this.held.values()) n += b;
+    return n;
+  }
+
+  /** Sets memory aside for a participant's shared model, and takes its files as they come. */
+  private receive(p: Participant, a: ModelAnnouncement): void {
+    this.held.set(p.id, a.bytes);
+    this.incoming.set(p.id, {
+      serial: a.serial,
+      data: a.files.map((f) => new Uint8Array(f.size)),
+      left: a.bytes,
+    });
+    if (a.bytes === 0) this.filesDone(p);
+  }
+
+  /** Room was freed: models that waited for it come, oldest first, as many as fit. */
+  private admitWaiting(): void {
+    for (const [peer, serial] of [...this.waiting]) {
+      const p = this.participants.get(peer);
+      const a = p?.model;
+      if (!p || !a || a.mode !== 'shared' || a.serial !== serial) {
+        this.waiting.delete(peer);
+        continue;
+      }
+      if (sharedRoom(this.heldBytes(), a.bytes)) continue;
+      this.waiting.delete(peer);
+      p.error = undefined;
+      this.receive(p, a);
+      const l = this.links.get(peer);
+      l?.send(l.ctl, JSON.stringify({ t: 'resend', serial }));
+    }
+    this.listener.changed();
+  }
+
+  /** A shared model set aside or shown no longer is: its room goes to those waiting. */
+  private release(peer: string): void {
+    if (this.held.delete(peer)) this.admitWaiting();
+  }
 
   async fileMessage(peer: string, b: Uint8Array): Promise<void> {
     const p = this.participants.get(peer);
@@ -834,6 +900,7 @@ export class CollabSession {
         problem: 'damaged',
         detail: `A piece of “${p.model?.files[i]?.path ?? 'a file'}” didn’t match.`,
       });
+      this.release(peer);
       this.listener.changed();
       return;
     }
@@ -856,19 +923,36 @@ export class CollabSession {
     const a = p.model;
     if (!inc || !a) return;
     this.incoming.delete(p.id);
-    p.files = new Map(a.files.map((f, i) => [f.path, inc.data[i]!]));
-    this.listener.modelFiles?.(p.id, p.files);
-    this.listener.changed();
+    const files = new Map(a.files.map((f, i) => [f.path, inc.data[i]!]));
+    // The textures' headers, before anything decodes them.
+    this.checking.set(p.id, a.serial);
+    void checkSharedTextures(files).then((refused) => {
+      if (this.checking.get(p.id) !== a.serial || p.model !== a) return;
+      this.checking.delete(p.id);
+      if (refused) {
+        this.refuse(p, a.serial, refused);
+        this.release(p.id);
+      } else {
+        p.files = files;
+        this.listener.modelFiles?.(p.id, p.files);
+      }
+      this.listener.changed();
+    });
   }
+  /** Shared models whose textures are being checked: their serial. */
+  private checking = new Map<string, number>();
 
-  /** Memory only: the files go, and the avatar with them. */
+  /** Memory only: the files go, and the avatar with them; their room goes to those waiting. */
   private dropFiles(p: Participant): void {
     this.incoming.delete(p.id);
+    this.checking.delete(p.id);
+    this.waiting.delete(p.id);
     p.received = 0;
     if (p.files) {
       p.files = undefined;
       this.listener.modelFiles?.(p.id, undefined);
     }
+    this.release(p.id);
   }
 
   private dropParticipant(peer: string): void {

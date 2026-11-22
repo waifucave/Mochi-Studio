@@ -2761,7 +2761,9 @@ export class Studio implements StudioApi {
             visible: this.runtime.isItemVisible(i.id),
             files: this.itemFilesForSync.get(i.id)!,
           })),
-        ...(this.extraViewItems?.() ?? []),
+        // Collaborators' avatars only to views people see (a view's hello sends them again):
+        // each message copies their files, and a shared model is up to 160 MB.
+        ...((this.hasViews && this.extraViewItems?.()) || []),
       ],
     });
     this.sync.post({ type: 'itemLayout', layout: this.runtime.exportItemLayout() });

@@ -11,7 +11,7 @@
  *   shared order (in front of this app's model or behind it), moving with
  *   their smoothed parameters. Hidden ones are hidden here only.
  */
-import { sharedModelTooLarge } from '../../core/collab/sharedModel';
+import { checkSharedTextures, sharedModelTooLarge } from '../../core/collab/sharedModel';
 import { COLLAB_ITEM_PREFIX, stageOrder, type StagePlace } from '../../core/collab/stage';
 import { imageItemFiles } from '../../core/imageItem';
 import { canvasPng, pngContext } from '../canvasPng';
@@ -90,7 +90,8 @@ export class CollabStage implements CollabApi {
         const m = studio.model;
         if (!m || !studio.settings) return undefined;
         const files = m.files.paths().sort();
-        const sizes = await Promise.all(files.map(async (p) => (await m.files.read(p)).length));
+        const data = await Promise.all(files.map((p) => m.files.read(p)));
+        const sizes = data.map((d) => d.length);
         const bytes = sizes.reduce((a, b) => a + b, 0);
         let mode: 'shared' | 'video' =
           studio.settings.collabSharing === 'shared' ? 'shared' : 'video';
@@ -98,11 +99,15 @@ export class CollabStage implements CollabApi {
         // Within the caps the others check (src/core/collab/sharedModel.ts).
         const tooLarge =
           mode === 'shared'
-            ? sharedModelTooLarge(files.map((path, i) => ({ path, size: sizes[i]! })))
+            ? (sharedModelTooLarge(files.map((path, i) => ({ path, size: sizes[i]! }))) ??
+              (await checkSharedTextures(new Map(files.map((path, i) => [path, data[i]!])))))
             : undefined;
         if (tooLarge) {
           mode = 'video';
-          this.sharingNote = `This model is too large to share, so others get it as video only. ${tooLarge.detail}`;
+          this.sharingNote =
+            tooLarge.problem === 'too-large'
+              ? `This model is too large to share, so others get it as video only. ${tooLarge.detail}`
+              : `This model can’t be shared as files, so others get it as video only. ${tooLarge.detail}`;
         }
         let video: ModelAnnouncement['video'];
         if (mode === 'video') {

@@ -199,12 +199,21 @@ for frame-by-frame effects.
   place), so even a relay never holds usable bytes.
 - **Kept** in memory only, never on disk, and deleted when the sender
   leaves or is removed, or the session ends.
-- **Limits:** 300 MB a model in all, 32 MB a file and 500 files. A model
-  over any of them always goes as video, and the sender's Collab tab says
-  which limit. Each app checks a model's list of files against the same
-  limits before it sets any memory aside for them. If one refuses it, it
-  says why, **too large** or **damaged**, and the sender's list shows
-  the reason beside that person's name.
+- **Limits on a model:** 160 MB in all, 32 MB a file and 500 files; its
+  textures at most 8192 pixels a side and 64 million pixels together (one
+  texture of 8192 × 8192, or four of 4096 × 4096). The largest models we
+  know of are about half of each. A model over any of these always goes
+  as video, and the sender's Collab tab says which limit.
+- **Limits on an app:** one app holds at most 600 MB of the others' shared
+  models at once. When a newer one doesn't fit, it waits: its sender's
+  list says "Their app has no room for your model now", and the model goes
+  to that app by itself once someone else's model is gone (they leave, or
+  load another). Video-only models don't count: they always come.
+- **Checked before anything is set aside:** each app checks a model's list
+  of files against these limits before it sets any memory aside, and its
+  textures' headers before anything decodes them. If one refuses it, it
+  says why (**too large**, **damaged** or **no room**), and the sender's
+  list shows the reason beside that person's name.
 - **No file server:** the sender pays the upload once per receiver, and no
   third party holds the files.
 - **What memory-only can't stop:** a participant with the right tools

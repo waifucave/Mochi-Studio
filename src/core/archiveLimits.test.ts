@@ -8,9 +8,17 @@ import {
   pictureSize,
   pictureTooLarge,
   SETTINGS_ARCHIVE_LIMITS,
+  SHARED_HELD_BYTES,
   SHARED_MODEL_LIMITS,
+  SHARED_TEXTURE_LIMITS,
 } from './archiveLimits';
-import { checkSharedAnnouncement, sharedModelTooLarge } from './collab/sharedModel';
+import {
+  checkSharedAnnouncement,
+  checkSharedTextures,
+  refusalForSender,
+  sharedModelTooLarge,
+  sharedRoom,
+} from './collab/sharedModel';
 import {
   checkArchiveFileSize,
   fileSetFromUrl,
@@ -43,7 +51,7 @@ async function rejection(p: Promise<unknown>): Promise<Error> {
 const problem = (e: Error) => (e as ModelLoadError).problem;
 
 describe('the caps per path', () => {
-  it('are Mochi2D’s caps for models from strangers, and tighter ones for a shared model within 300 MB', () => {
+  it('are Mochi2D’s caps for models from strangers, and tighter ones for a shared model', () => {
     expect(MODEL_ARCHIVE_LIMITS).toEqual({
       maxEntryBytes: 64 * MB,
       maxTotalBytes: 256 * MB,
@@ -52,9 +60,11 @@ describe('the caps per path', () => {
     expect(SETTINGS_ARCHIVE_LIMITS).toEqual(MODEL_ARCHIVE_LIMITS);
     expect(SHARED_MODEL_LIMITS).toEqual({
       maxEntryBytes: 32 * MB,
-      maxTotalBytes: 300 * MB,
+      maxTotalBytes: 160 * MB,
       maxEntries: 500,
     });
+    expect(SHARED_TEXTURE_LIMITS).toEqual({ maxSide: 8192, maxPixels: 8192 * 8192 });
+    expect(SHARED_HELD_BYTES).toBe(600 * MB);
   });
 });
 
@@ -335,9 +345,75 @@ describe('a shared model’s announcement', () => {
       problem: 'too-large',
       detail: 'It has 501 files; the most is 500.',
     });
-    const heavy = Array.from({ length: 10 }, (_, i) => ({ path: `${i}`, size: 31 * MB }));
-    expect(checkSharedAnnouncement(heavy, 310 * MB)?.detail).toBe(
-      'Its files come to 310 MB; the most in all is 300 MB.',
+    const heavy = Array.from({ length: 10 }, (_, i) => ({ path: `${i}`, size: 17 * MB }));
+    expect(checkSharedAnnouncement(heavy, 170 * MB)?.detail).toBe(
+      'Its files come to 170 MB; the most in all is 160 MB.',
+    );
+  });
+
+  it('fits beside the others’ models up to 600 MB, and says why not past it', () => {
+    expect(sharedRoom(440 * MB, 160 * MB)).toBeUndefined();
+    expect(sharedRoom(450 * MB, 160 * MB)).toEqual({
+      problem: 'no-room',
+      detail:
+        'This app holds 450 MB of others’ models already, and 600 MB at most; this one is 160 MB. It comes when there is room.',
+    });
+    expect(refusalForSender(sharedRoom(450 * MB, 160 * MB)!)).toBe(
+      'Their app has no room for your model now. It goes to them by itself when there is room.',
+    );
+  });
+});
+
+describe('a shared model’s textures', () => {
+  const png = (w: number, h: number) => {
+    const b = new Uint8Array(33);
+    b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13], 0);
+    b.set(enc.encode('IHDR'), 12);
+    new DataView(b.buffer).setUint32(16, w);
+    new DataView(b.buffer).setUint32(20, h);
+    return b;
+  };
+  const model = (...textures: Uint8Array[]) =>
+    new Map<string, Uint8Array>([
+      [
+        'M/m.model3.json',
+        enc.encode(
+          JSON.stringify({
+            FileReferences: { Moc: 'm.moc3', Textures: textures.map((_, i) => `t/${i}.png`) },
+          }),
+        ),
+      ],
+      ['M/m.moc3', new Uint8Array(10)],
+      ...textures.map((t, i) => [`M/t/${i}.png`, t] as [string, Uint8Array]),
+    ]);
+
+  it('lets through textures up to 8192 a side and 64 Mi pixels in all', async () => {
+    expect(await checkSharedTextures(model(png(8192, 8192)))).toBeUndefined();
+    expect(
+      await checkSharedTextures(
+        model(png(4096, 4096), png(4096, 4096), png(4096, 4096), png(4096, 4096)),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('refuses a texture over 8192 a side, by its header', async () => {
+    expect(await checkSharedTextures(model(png(16384, 64)))).toEqual({
+      problem: 'too-large',
+      detail: 'Its texture “t/0.png” is 16,384 × 64 pixels; the most is 8,192 a side.',
+    });
+  });
+
+  it('refuses textures that come to more than 64 Mi pixels together', async () => {
+    expect(await checkSharedTextures(model(png(8192, 8192), png(1024, 1024)))).toEqual({
+      problem: 'too-large',
+      detail: 'Its textures come to 68 million pixels; the most in all is 67 million.',
+    });
+  });
+
+  it('calls damaged a texture that is no picture, or a model without settings', async () => {
+    expect((await checkSharedTextures(model(enc.encode('not a png'))))?.problem).toBe('damaged');
+    expect((await checkSharedTextures(new Map([['x.bin', new Uint8Array(1)]])))?.problem).toBe(
+      'damaged',
     );
   });
 });
