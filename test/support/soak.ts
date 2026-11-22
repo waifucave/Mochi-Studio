@@ -71,7 +71,23 @@ export interface SoakResult {
    * injections and the light overlay running): what this machine draws.
    */
   baseFps: { window: number; view: number };
+  /** How long the run took, in seconds. */
+  seconds: number;
+  /**
+   * How long this process (the test, the bridge and the plugin) was held
+   * without running, in all: gaps of over 100 ms in a 10 ms timer. A
+   * machine too busy to run it makes fewer events in the same time.
+   */
+  heldMs: number;
+  /** The plugin request answered last after it was sent, and how long it took. */
+  slowestAnswer: { type: string; ms: number };
 }
+
+/**
+ * How long a plugin request may wait for its answer: as long as an item may
+ * take to load. Every request is answered; on a busy machine, late.
+ */
+export const ANSWER_WAIT_MS = 60_000;
 
 /**
  * Run through tsx (the scripts), functions handed to the page may call
@@ -194,6 +210,23 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
   let H: Harness | undefined;
   let bridge: BridgeServer | undefined;
   let plugin: PluginClient | undefined;
+  // How long this process is held without running (a 10 ms timer that comes late).
+  let heldMs = 0;
+  let lastBeat = performance.now();
+  const heartbeat = setInterval(() => {
+    const now = performance.now();
+    if (now - lastBeat > 100) heldMs += now - lastBeat;
+    lastBeat = now;
+  }, 10);
+  const slowestAnswer = { type: '', ms: 0 };
+  /** A plugin request, timed: every one is answered, and the slowest is reported. */
+  const ask = async (type: string, data: Record<string, unknown>) => {
+    const t0 = performance.now();
+    const r = await plugin!.request(type, data, ANSWER_WAIT_MS);
+    const ms = Math.round(performance.now() - t0);
+    if (ms > slowestAnswer.ms) Object.assign(slowestAnswer, { type, ms });
+    return r;
+  };
   try {
     H = await startHarness();
     await H.context.addInitScript({ content: KEEP_NAMES });
@@ -355,11 +388,11 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
         await page.keyboard.press(Math.random() < 0.5 ? 'KeyB' : 'KeyH');
       },
       hotkeyPlugin: async () => {
-        await plugin!.request('HotkeyTriggerRequest', { hotkeyID: 'blush' }, 60_000);
+        await ask('HotkeyTriggerRequest', { hotkeyID: 'blush' });
       },
       expression: async () => {
         blushOn = !blushOn;
-        await plugin!.request('ExpressionActivationRequest', {
+        await ask('ExpressionActivationRequest', {
           expressionFile: expressions[1 % expressions.length]!.file,
           active: blushOn,
         });
@@ -368,16 +401,12 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
         if (pluginItems.length >= 3) return;
         // A busy renderer (a large model in software WebGL) can answer late: wait for it, or
         // the item it loads is left behind untracked.
-        const r = await plugin!.request(
-          'ItemLoadRequest',
-          {
-            fileName: 'Hat',
-            positionX: Math.random() - 0.5,
-            positionY: Math.random() - 0.5,
-            size: 0.2,
-          },
-          60_000,
-        );
+        const r = await ask('ItemLoadRequest', {
+          fileName: 'Hat',
+          positionX: Math.random() - 0.5,
+          positionY: Math.random() - 0.5,
+          size: 0.2,
+        });
         if (r.data.instanceID) {
           pluginItems.push(r.data.instanceID);
           events.pluginItemLoaded = (events.pluginItemLoaded ?? 0) + 1;
@@ -385,7 +414,7 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
       },
       pluginItemUnload: async () => {
         const id = pluginItems.shift();
-        if (id) await plugin!.request('ItemUnloadRequest', { instanceIDs: [id] }, 60_000);
+        if (id) await ask('ItemUnloadRequest', { instanceIDs: [id] });
       },
       imageItemAdd: async () => {
         if (imageItems.length >= 2) return;
@@ -430,7 +459,7 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
         if (id) await page.evaluate((id) => (window as any).mochiStudio.removeItem(id), id);
       },
       pluginQuery: async () => {
-        await plugin!.request(queries[events.pluginQuery! % queries.length]!, {}, 60_000);
+        await ask(queries[events.pluginQuery! % queries.length]!, {});
       },
       viewRefresh: async () => {
         await vcdp.detach().catch(() => undefined);
@@ -468,6 +497,8 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
 
     const samples: SoakSample[] = [];
     const start = Date.now();
+    // Held from here on: the events' own time.
+    heldMs = 0;
     const frames0 = {
       window: await page.evaluate(() => (window as any).mochiStudio.framesDrawn as number),
       view: 0,
@@ -529,8 +560,7 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
     await Promise.all(lanes);
     clearInterval(injector);
     // Everything added is removed again: the WebGL objects should return to where they were.
-    for (const id of pluginItems.splice(0))
-      await plugin.request('ItemUnloadRequest', { instanceIDs: [id] }, 60_000);
+    for (const id of pluginItems.splice(0)) await ask('ItemUnloadRequest', { instanceIDs: [id] });
     for (const id of imageItems.splice(0))
       await page.evaluate((id) => (window as any).mochiStudio.removeItem(id), id);
     await new Promise((r) => setTimeout(r, 1000));
@@ -547,8 +577,12 @@ export async function runSoak(o: SoakOptions): Promise<SoakResult> {
         view: Math.round((viewFrames / seconds) * 10) / 10,
       },
       baseFps,
+      seconds: Math.round(seconds),
+      heldMs: Math.round(heldMs),
+      slowestAnswer,
     };
   } finally {
+    clearInterval(heartbeat);
     plugin?.close();
     await bridge?.close();
     await H?.close();

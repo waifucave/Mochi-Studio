@@ -43,6 +43,9 @@ const r = await runSoak({
 });
 console.log('\nevents:', JSON.stringify(r.events));
 console.log(
+  `held: ${(r.heldMs / 1000).toFixed(1)} s of ${r.seconds} s; slowest answer: ${r.slowestAnswer.type} ${r.slowestAnswer.ms} ms`,
+);
+console.log(
   'frames a second:',
   JSON.stringify(r.fps),
   'before the events:',

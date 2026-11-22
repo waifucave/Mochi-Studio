@@ -118,8 +118,9 @@ or ICO files; AVIF, HEIF, TIFF and JPEG XL textures are refused (save them
 as PNG). When a model is refused, the one shown before stays.
 
 **Motion sounds.** A model you open plays its motions' sounds in any format
-the browser can play (WAV, MP3, Ogg, FLAC…). A sound that can't play is
-named in the log (main menu → Log) when its motion starts. A collaborator's
+the browser can play (WAV, MP3, Ogg, FLAC…). A sound that can't play (one
+the browser can't decode, or one missing from the model's folder) is named
+in the log (main menu → Log) when its motion starts. A collaborator's
 model plays none of its own sounds here, and the Collab tab says so beside
 their name.
 

@@ -2046,6 +2046,10 @@ export class Studio implements StudioApi {
   get backgroundFrames(): number {
     return this.clock?.ticked ?? 0;
   }
+  /** The last frames run on ticks: when, and how long after the last animation frame (tests). */
+  get backgroundFrameLog(): ReadonlyArray<{ at: number; sinceAnimationFrame: number }> {
+    return this.clock?.tickLog ?? [];
+  }
 
   /**
    * One frame. Public so tests can drive time. With `draw` false (the window

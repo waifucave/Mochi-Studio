@@ -145,14 +145,16 @@ describe('a texture past the caps, a lying one, and one in a format we don’t o
 });
 
 describe('a model’s own compressed motion sounds', () => {
-  it('play for a model the person opens; one the browser can’t decode is named in the log', async () => {
+  it('play for a model the person opens; one the browser can’t decode, or missing, is named in the log', async () => {
     const files = syntheticModelFiles();
     const settings = JSON.parse(new TextDecoder().decode(files['test.model3.json']));
     settings.FileReferences.Motions.Wave[0].Sound = 'sounds/tone.ogg';
-    settings.FileReferences.Motions.Wave.push({
-      File: 'wave.motion3.json',
-      Sound: 'sounds/broken.ogg',
-    });
+    settings.FileReferences.Motions.Wave.push(
+      { File: 'wave.motion3.json', Sound: 'sounds/broken.ogg' },
+      // Named in the settings, not in the zip: since Mochi2D 0.24.1 it is named in the
+      // warnings when its motion starts (it was dropped silently).
+      { File: 'wave.motion3.json', Sound: 'sounds/missing.ogg' },
+    );
     files['test.model3.json'] = enc.encode(JSON.stringify(settings));
     files['sounds/tone.ogg'] = new Uint8Array(readFileSync('test/fixtures/tone.ogg'));
     // An Ogg's first bytes, then nothing a decoder can use.
@@ -179,5 +181,10 @@ describe('a model’s own compressed motion sounds', () => {
       (window as any).mochiStudio.playMotion({ group: 'Wave', index: 1 }, 'once'),
     );
     await expect.poll(logText, { timeout: 10_000 }).toMatch(/broken\.ogg/);
+    // A sound that isn't there reaches the log too, the same way.
+    await page.evaluate(() =>
+      (window as any).mochiStudio.playMotion({ group: 'Wave', index: 2 }, 'once'),
+    );
+    await expect.poll(logText, { timeout: 10_000 }).toMatch(/missing\.ogg/);
   });
 });

@@ -393,7 +393,11 @@ The automated tests run an hour of stream events in 90 seconds
 (`test/browser/soak.test.ts`). `npm run soak -- --heavy` runs three hours of
 events in 20 minutes on a model of DeepSeek-chan's size, `npm run
 frame-budget` measures frame times, and `npm run startup` measures startup.
-None of them has a graphics card or a real camera.
+None of them has a graphics card or a real camera. The 90-second run also
+measures how long the test itself was held without running: on a machine too
+busy to run it for more than a tenth of that time, it doesn't count the events
+or compare frame rates, and says so. It still checks that nothing failed,
+that every plugin request was answered and that memory didn't grow.
 
 | Try                                                                       | Expect                                                          |
 | ------------------------------------------------------------------------- | --------------------------------------------------------------- |

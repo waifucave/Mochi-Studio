@@ -72,37 +72,92 @@ describe('output views while the control window is out of sight', () => {
     await fresh.bringToFront();
     // Before it came to the front it was out of sight: count from now.
     await fresh.waitForTimeout(300);
-    // 1.5 s of the window's own animation frames, and the frames the ticks ran meanwhile.
-    const { gaps, ticked } = await fresh.evaluate(
+    // 1.5 s of the window's own animation frames, and the frames the ticks ran meanwhile, by
+    // one clock: the page's, when each callback ran (as the frame clock reads it).
+    const { frames, ticks, end } = await fresh.evaluate(
       () =>
-        new Promise<{ gaps: number[]; ticked: number }>((resolve) => {
+        new Promise<{
+          frames: number[];
+          ticks: Array<{ at: number; sinceAnimationFrame: number }>;
+          end: number;
+        }>((resolve) => {
           const s = (window as any).mochiStudio;
-          const before = s.backgroundFrames as number;
-          const times: number[] = [];
+          const frames: number[] = [];
           const start = performance.now();
-          const step = (t: number) => {
-            times.push(t);
-            if (t - start < 1500) requestAnimationFrame(step);
-            else {
-              const gaps = times.slice(1).map((x, i) => x - times[i]!);
-              resolve({ gaps, ticked: s.backgroundFrames - before });
-            }
+          const step = () => {
+            const now = performance.now();
+            frames.push(now);
+            if (now - start < 1500) requestAnimationFrame(step);
+            else
+              resolve({
+                frames,
+                ticks: s.backgroundFrameLog.filter((t: { at: number }) => t.at > frames[0]!),
+                end: now,
+              });
           };
           requestAnimationFrame(step);
         }),
     );
     // The design (src/web/frameClock.ts): a tick runs a frame only once no animation frame
-    // came for 100 ms, about one per 33 ms tick after that. With frames every 16 ms, none;
-    // on a busy machine whose frames come late, the ticks fill those gaps, and only those.
-    const allowed = gaps
-      .filter((g) => g > 100)
-      .reduce((n, g) => n + Math.ceil((g - 100) / 33) + 1, 0);
-    const longest = Math.max(...gaps);
-    if (ticked > 0 || allowed > 0)
+    // came for 100 ms, and one per 33 ms tick after that, however late the ticks come
+    // together. With frames every 16 ms, none; on a busy machine whose frames come late, the
+    // ticks fill those gaps, and only those. Each tick frame must fall in a gap of this
+    // page's own frames of over 100 ms (less 10 ms: the frame clock's callback and this one
+    // run apart within a frame), and a gap holds at most one per 33 ms after its first 100.
+    const gaps = new Map<number, { ms: number; ticks: number }>();
+    for (const t of ticks) {
+      const i = frames.findIndex((f) => f > t.at);
+      const before = i < 0 ? frames.at(-1)! : frames[i - 1]!;
+      const after = i < 0 ? end : frames[i]!;
+      const g = gaps.get(before) ?? { ms: after - before, ticks: 0 };
+      g.ticks++;
+      gaps.set(before, g);
+    }
+    const longest = Math.max(...frames.slice(1).map((f, i) => f - frames[i]!));
+    if (ticks.length)
       console.log(
-        `Animation frames: ${gaps.length} gaps, the longest ${longest.toFixed(0)} ms; ticks ran ${ticked} frames, ${allowed} allowed`,
+        `Animation frames: ${frames.length}, the longest gap ${longest.toFixed(0)} ms; ` +
+          `ticks ran ${ticks.length} frames, in gaps of ` +
+          [...gaps.values()].map((g) => `${g.ms.toFixed(0)} ms (${g.ticks})`).join(', '),
       );
-    expect(ticked).toBeLessThanOrEqual(allowed);
+    for (const g of gaps.values()) {
+      expect(g.ms).toBeGreaterThan(90);
+      expect(g.ticks).toBeLessThanOrEqual(Math.ceil(Math.max(0, g.ms - 100) / 33) + 1);
+    }
+    await fresh.close();
+  });
+
+  it('runs one frame for the ticks that came while the window was busy, not one each', async () => {
+    const fresh = await H.context.newPage();
+    await fresh.goto(H.url);
+    await fresh.waitForFunction(() => 'mochiStudio' in window);
+    // Out of sight (minimized or covered: no animation frames), and its thread then held for
+    // 400 ms (loading something, on a busy computer). The worker's ticks queue up meanwhile,
+    // about twelve, and arrive together once it is free.
+    const { held, ticks } = await fresh.evaluate(async () => {
+      const s = (window as any).mochiStudio;
+      s.stop();
+      window.requestAnimationFrame = () => 0;
+      s.start();
+      await new Promise((r) => setTimeout(r, 500));
+      const t0 = performance.now();
+      while (performance.now() - t0 < 400) {
+        /* busy */
+      }
+      const held = performance.now();
+      await new Promise((r) => setTimeout(r, 300));
+      return {
+        held,
+        ticks: (s.backgroundFrameLog as Array<{ at: number }>)
+          .filter((t) => t.at > t0)
+          .map((t) => t.at),
+      };
+    });
+    // One frame for all of them, then one per tick again: never two tick frames closer than
+    // half a tick (33 ms), which would be frames with no time between them.
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(ticks.filter((t) => t - held < 16).length).toBeLessThanOrEqual(1);
+    for (let i = 1; i < ticks.length; i++) expect(ticks[i]! - ticks[i - 1]!).toBeGreaterThan(16);
     await fresh.close();
   });
 });
