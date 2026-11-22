@@ -1,4 +1,6 @@
 import { strengthTint } from '../core/lightOverlay';
+import { MODEL_TEXTURE_LIMITS, SHARED_TEXTURE_LIMITS } from '../core/archiveLimits';
+import { describeLoadError, ModelLoadError } from '../core/modelFiles';
 import { COLLAB_ITEM_PREFIX } from '../core/collab/stage';
 import {
   LIVE_LIP_SYNC_DEFAULTS,
@@ -48,13 +50,59 @@ export const WEBGL_TIPS = [
 ];
 
 /** A `ModelFileSet` as Mochi2D's `FileSource`. */
-function toSource(files: ModelFileSet): {
-  label: string;
-  list(): readonly string[];
-  read(p: string): Promise<Uint8Array>;
-} {
+type Source = { label: string; list(): readonly string[]; read(p: string): Promise<Uint8Array> };
+
+function toSource(files: ModelFileSet): Source {
   return { label: files.label, list: () => files.paths(), read: (p) => files.read(p) };
 }
+
+/**
+ * A source that keeps the first bytes of each file Mochi2D reads (a copy,
+ * not the file), so a refused texture's format can be named. Only until
+ * `done()`: the source stays the model's, and later reads (an expression,
+ * each preview) need none.
+ */
+function watched(src: Source): {
+  source: Source;
+  head(path: string): Uint8Array | undefined;
+  done(): void;
+} {
+  const heads = new Map<string, Uint8Array>();
+  let watching = true;
+  return {
+    source: {
+      label: src.label,
+      list: () => src.list(),
+      read: async (p) => {
+        const b = await src.read(p);
+        if (watching) heads.set(p, b.slice(0, 32));
+        return b;
+      },
+    },
+    done: () => {
+      watching = false;
+      heads.clear();
+    },
+    head: (path) => {
+      for (const [p, b] of heads) if (p === path || p.endsWith(`/${path}`)) return b;
+      return undefined;
+    },
+  };
+}
+
+/** Mochi2D's refusal of a model or an item, said plainly (src/core/modelFiles.ts). */
+function plainRefusal(e: unknown, what: string, head: (p: string) => Uint8Array | undefined) {
+  const d = describeLoadError(e, what, head);
+  return d ? new ModelLoadError(d.message, d.problem) : e;
+}
+
+/**
+ * The caps an item is loaded with: a collaborator's shared model gets the
+ * shared ones (the same its files were checked against), every other item
+ * the caps of the person's own (src/core/archiveLimits.ts).
+ */
+const itemTextureLimits = (id: string) =>
+  id.startsWith(COLLAB_ITEM_PREFIX) ? SHARED_TEXTURE_LIMITS : MODEL_TEXTURE_LIMITS;
 
 /** Which audio live lip sync follows: a stream instead of the microphone, and voice processing. */
 export interface LiveAudioOptions {
@@ -120,6 +168,8 @@ export class MochiRuntime implements AvatarRuntime {
 
   /** Why the renderer cannot draw (no WebGL 2), or undefined when it can. */
   problem: string | undefined;
+  /** How many of the model's warnings have been told (load's notices included). */
+  private warningsSeen = 0;
 
   attach(canvas: HTMLCanvasElement): void {
     this.canvas = canvas;
@@ -171,20 +221,37 @@ export class MochiRuntime implements AvatarRuntime {
   }
 
   async load(model: LoadedModelFiles): Promise<RuntimeModelInfo> {
-    this.resetModelState();
-    const extra = this.extraFiles;
     const files = model.files;
-    // Own expressions (and the editor's preview) are files laid over the model's.
-    const source = {
+    const extra = this.extraFiles;
+    // Own expressions (and the editor's preview) are files laid over the model's. Mochi2D
+    // reads them from this source when they are added, after the load; the map is cleared
+    // with the model state below, once the new model has loaded.
+    const w = watched({
       label: files.label,
       list: () => [...files.paths(), ...extra.keys()],
       read: (p: string) => {
         const x = extra.get(p);
         return x ? Promise.resolve(x) : files.read(p);
       },
-    };
-    const m = await this.v.load(source, { settings: model.manifest.file });
+    });
+    // The person's own model: its compressed motion sounds play too (MP3, Ogg);
+    // a collaborator's model is an item, and items play no motion sounds.
+    let m: MochiModel;
+    try {
+      m = await this.v.load(w.source, {
+        settings: model.manifest.file,
+        textures: MODEL_TEXTURE_LIMITS,
+        sounds: { compressed: true },
+      });
+    } catch (e) {
+      // Mochi2D keeps the model shown before, and so does this state.
+      throw plainRefusal(e, 'This model', w.head);
+    } finally {
+      w.done();
+    }
+    this.resetModelState();
     this.model = m;
+    this.warningsSeen = m.warnings.length;
     this.filePhysicsRate = m.physicsRate;
     m.runtime.onMotionEnd((end) => {
       if (end.reason === 'finished')
@@ -813,7 +880,32 @@ export class MochiRuntime implements AvatarRuntime {
 
   // --- items ------------------------------------------------------------------
 
-  async addItem(
+  /** Items being loaded, by id: the last load asked for. */
+  private itemLoads = new Map<string, Promise<void>>();
+
+  /**
+   * One load at a time for each id: a second waits for the first, then
+   * replaces it (two loads at once would give Mochi2D the same id twice).
+   */
+  addItem(
+    id: string,
+    files: ModelFileSet,
+    state: { visible: boolean; placement?: ItemPlacement },
+  ): Promise<void> {
+    const before = this.itemLoads.get(id);
+    const run = (before ? before.catch(() => undefined) : Promise.resolve()).then(() =>
+      this.loadItem(id, files, state),
+    );
+    this.itemLoads.set(id, run);
+    run
+      .finally(() => {
+        if (this.itemLoads.get(id) === run) this.itemLoads.delete(id);
+      })
+      .catch(() => undefined);
+    return run;
+  }
+
+  private async loadItem(
     id: string,
     files: ModelFileSet,
     state: { visible: boolean; placement?: ItemPlacement },
@@ -825,10 +917,23 @@ export class MochiRuntime implements AvatarRuntime {
     previous?.dispose();
     this.itemMap.delete(id);
     // Mochi2D knows the item by Mochi Studio's id, so copies keep their own places.
-    const item = await this.v.addItem(toSource(files), {
-      id,
-      ...(state.placement ? { placement: state.placement } : {}),
-    });
+    const w = watched(toSource(files));
+    let item: MochiItem;
+    try {
+      item = await this.v.addItem(w.source, {
+        id,
+        textures: itemTextureLimits(id),
+        ...(state.placement ? { placement: state.placement } : {}),
+      });
+    } catch (e) {
+      throw plainRefusal(
+        e,
+        id.startsWith(COLLAB_ITEM_PREFIX) ? 'Their model' : 'This item',
+        w.head,
+      );
+    } finally {
+      w.done();
+    }
     item.visible = state.visible;
     if (opacity !== undefined) item.opacity = opacity;
     this.itemMap.set(id, item);
@@ -1284,6 +1389,13 @@ export class MochiRuntime implements AvatarRuntime {
     this.applyWind();
     view.advance(Math.max(0, dtMs) / 1000, { draw });
     this.keepIdle();
+    // Mochi2D names a motion sound that won't play when it was to play.
+    const warnings = this.model?.warnings;
+    if (warnings && warnings.length > this.warningsSeen) {
+      for (const text of warnings.slice(this.warningsSeen))
+        this.events.emit('modelNotice', { text });
+      this.warningsSeen = warnings.length;
+    }
     if (this.pixelsPerUnit === undefined && this.model) this.applyTransform();
   }
 

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BridgeServer } from '../../bridge/src/server.ts';
 import { BridgeStore } from '../../bridge/src/store.ts';
 import { PluginClient, expectEnvelope, type Message } from '../support/pluginClient';
+import { pngDeclaring } from '../support/craftedTexture';
 import { encodePng } from '../support/syntheticModel';
 import {
   openSection,
@@ -420,6 +421,18 @@ describe('plugin items, images and geometry', () => {
       (await load({ customDataBase64: Buffer.from('<svg/>').toString('base64') })).data.errorID,
     ).toBe(758);
     expect((await load({ customDataBase64: pngBase64(32, 32) })).data.errorID).toBe(758);
+    // Past its caps by its header (4096 a side), and a lie (a size its file can't hold).
+    const b64 = (b: Uint8Array) => Buffer.from(b).toString('base64');
+    expect((await load({ customDataBase64: b64(pngDeclaring(4096, 4096)) })).data).toMatchObject({
+      errorID: 758,
+      message: 'Each side of the image must be 64 to 2048 pixels.',
+    });
+    expect(
+      (await load({ customDataBase64: b64(pngDeclaring(2048, 2048, true)) })).data,
+    ).toMatchObject({
+      errorID: 758,
+      message: 'The image is damaged, or shorter than the size it declares.',
+    });
 
     // The person sees the picture: Don't show, then Show it.
     let r = load({ customDataAskUserFirst: true });

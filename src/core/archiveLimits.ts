@@ -1,4 +1,4 @@
-import type { ArchiveLimits } from 'mochi2d/headless';
+import type { ArchiveLimits, TextureLimits } from 'mochi2d/headless';
 
 /**
  * How much an archive Mochi Studio did not make may take, per path
@@ -21,6 +21,16 @@ import type { ArchiveLimits } from 'mochi2d/headless';
  *   holds at most 600 MB of others' shared models at once. The sender
  *   checks the same caps, so only a crafted announcement is refused.
  *
+ * Textures (Mochi2D's `TextureLimits`, read from each texture's header
+ * before anything decodes it):
+ *
+ * - **A model or an item** of the person's own, a plugin's item, a dropped
+ *   picture's item: 8192 a side, 2²⁶ pixels a texture (256 MB once
+ *   decoded), 2²⁸ a model. Mochi2D gives these for apps that open models
+ *   from strangers, and they fit every model it measured.
+ * - **A shared model:** the same per texture, and 2²⁶ (67,108,864) pixels
+ *   in all.
+ *
  * An archive at its caps costs at most about twice its per-file cap at
  * once, and its total over its life.
  */
@@ -40,10 +50,22 @@ export const SHARED_MODEL_LIMITS: Readonly<Required<ArchiveLimits>> = Object.fre
   maxEntries: 500,
 });
 
-/** A shared model's textures, from their headers, before anything decodes them. */
-export const SHARED_TEXTURE_LIMITS = Object.freeze({
+/** The textures of a model or an item opened here (the person's own, a plugin's, a picture's). */
+export const MODEL_TEXTURE_LIMITS: Readonly<Required<TextureLimits>> = Object.freeze({
   maxSide: 8192,
-  maxPixels: 8192 * 8192,
+  maxPixels: 2 ** 26,
+  maxTotalPixels: 2 ** 28,
+});
+
+/**
+ * A shared model's textures: what the receiver checks before it shows the
+ * model, what the sender checks before it shares it, and the caps the model
+ * is then loaded with. One rule, Mochi2D's.
+ */
+export const SHARED_TEXTURE_LIMITS: Readonly<Required<TextureLimits>> = Object.freeze({
+  maxSide: 8192,
+  maxPixels: 2 ** 26,
+  maxTotalPixels: 2 ** 26,
 });
 
 /** What one app holds of others' shared models at once, all participants together. */
@@ -62,57 +84,6 @@ export const MAX_SETTINGS_JSON_BYTES = 16 * MB;
  */
 export const MAX_PICTURE_FILE_BYTES = 64 * MB;
 export const MAX_PICTURE_PIXELS = 64_000_000;
-
-/** A picture's width and height from its header: PNG, JPEG, GIF or WebP; undefined if unknown. */
-export function pictureSize(b: Uint8Array): { width: number; height: number } | undefined {
-  const at = (i: number) => b[i] ?? 0;
-  const u16be = (i: number) => (at(i) << 8) | at(i + 1);
-  const u16le = (i: number) => at(i) | (at(i + 1) << 8);
-  const u24le = (i: number) => at(i) | (at(i + 1) << 8) | (at(i + 2) << 16);
-  const u32be = (i: number) =>
-    ((at(i) << 24) >>> 0) + (at(i + 1) << 16) + (at(i + 2) << 8) + at(i + 3);
-  const ascii = (i: number, n: number) => String.fromCharCode(...b.subarray(i, i + n));
-  if (b.length >= 24 && at(0) === 0x89 && ascii(1, 3) === 'PNG' && ascii(12, 4) === 'IHDR')
-    return { width: u32be(16), height: u32be(20) };
-  if (b.length >= 10 && ascii(0, 3) === 'GIF') return { width: u16le(6), height: u16le(8) };
-  if (b.length >= 30 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') {
-    const chunk = ascii(12, 4);
-    if (chunk === 'VP8X') return { width: 1 + u24le(24), height: 1 + u24le(27) };
-    if (chunk === 'VP8L') {
-      const bits = at(21) | (at(22) << 8) | (at(23) << 16) | (at(24) << 24);
-      return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >>> 14) & 0x3fff) };
-    }
-    if (chunk === 'VP8 ') return { width: u16le(26) & 0x3fff, height: u16le(28) & 0x3fff };
-    return undefined;
-  }
-  if (at(0) === 0xff && at(1) === 0xd8) {
-    // JPEG: the first start-of-frame marker (SOF0 to SOF15, except DHT, JPG and DAC).
-    let i = 2;
-    while (i + 9 < b.length) {
-      if (at(i) !== 0xff) return undefined;
-      const marker = at(i + 1);
-      if (marker === 0xff) {
-        i++;
-        continue;
-      }
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
-        return { width: u16be(i + 7), height: u16be(i + 5) };
-      if (marker === 0xd9 || marker === 0xda) return undefined;
-      i += 2 + u16be(i + 2);
-    }
-  }
-  return undefined;
-}
-
-/** Why a picture is refused before it is decoded, or undefined. */
-export function pictureTooLarge(fileBytes: number, head?: Uint8Array): string | undefined {
-  if (fileBytes > MAX_PICTURE_FILE_BYTES)
-    return fileTooLargeMessage('This picture', fileBytes, MAX_PICTURE_FILE_BYTES);
-  const size = head && pictureSize(head);
-  if (size && size.width * size.height > MAX_PICTURE_PIXELS)
-    return `This picture is larger than we accept. It is ${size.width.toLocaleString('en')} × ${size.height.toLocaleString('en')} pixels; the most is ${(MAX_PICTURE_PIXELS / 1e6).toFixed(0)} million pixels.`;
-  return undefined;
-}
 
 /**
  * The largest archive file read at all: its caps' total and a little more

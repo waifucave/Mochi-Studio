@@ -105,7 +105,23 @@ a wrong checksum) is refused as **damaged**, and is worth downloading or
 copying again. Settings files follow the same limits, with 16 MB for the
 settings themselves; **Export…** says so instead of writing a file the
 import would refuse. A picture dropped on the stage may be up to 64 MB and
-64 million pixels. A folder you open has no limits: it is your own.
+64 million pixels. A folder you open has no file limits: it is your own.
+
+**Textures.** Every texture's size is read from its file before anything
+decodes it, for any model or item (a folder too): at most 8,192 pixels a
+side, 67,108,864 pixels (8192 × 8192) for one texture, and 268,435,456 for
+a whole model (four textures of 8192 × 8192). These fit every model
+measured. Past them, the model is refused as **too large** and the message
+names the texture. A texture whose file is too short for the size it
+claims is refused as **damaged**. Textures may be PNG, JPEG, WebP, GIF, BMP
+or ICO files; AVIF, HEIF, TIFF and JPEG XL textures are refused (save them
+as PNG). When a model is refused, the one shown before stays.
+
+**Motion sounds.** A model you open plays its motions' sounds in any format
+the browser can play (WAV, MP3, Ogg, FLAC…). A sound that can't play is
+named in the log (main menu → Log) when its motion starts. A collaborator's
+model plays none of its own sounds here, and the Collab tab says so beside
+their name.
 
 When a manifest lists no expressions or motions, Mochi Studio offers the
 `.exp3.json` and `.motion3.json` files it finds in the folder (marked "found

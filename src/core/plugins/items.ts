@@ -3,6 +3,7 @@
  * the checks and conversions that need no app state, so they can be tested
  * on their own. The page applies them (src/web/pluginHost.ts).
  */
+import { readTextureHeader, TextureFormatError } from 'mochi2d/headless';
 import { E } from './protocol';
 
 /** Order slots: −30 to 30; 0 is the main model's, so items never take it (not documented). */
@@ -278,6 +279,17 @@ export function checkCustomImage(bytes: Uint8Array | undefined): SniffedImage | 
     return fail(E.itemInvalidImage, 'Each side of the image must be 64 to 2048 pixels.');
   if (img.frames > MAX_GIF_FRAMES)
     return fail(E.itemInvalidImage, 'A GIF may have at most 1024 frames.');
+  // The size it declares must fit the file (Mochi2D's header reader), or it is crafted.
+  try {
+    readTextureHeader('image', bytes);
+  } catch (e) {
+    if (e instanceof TextureFormatError)
+      return fail(
+        E.itemInvalidImage,
+        'The image is damaged, or shorter than the size it declares.',
+      );
+    throw e;
+  }
   return img;
 }
 

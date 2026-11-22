@@ -9,7 +9,8 @@
  *
  * Double-clicking (or double-tapping) the stage elsewhere opens the main menu.
  */
-import { MAX_PICTURE_FILE_BYTES, pictureTooLarge } from '../core/archiveLimits';
+import { MAX_PICTURE_FILE_BYTES } from '../core/archiveLimits';
+import { pictureRefusal } from '../core/textureCaps';
 import { imageItemFiles } from '../core/imageItem';
 import { canvasPng, pngContext } from './canvasPng';
 import { gifItem, isAnimatedGif } from './animatedItems';
@@ -75,7 +76,7 @@ export async function addImageItem(studio: Studio, file: File): Promise<string> 
   // Its size from its header, before the browser decodes it (at any size it declares).
   const bytes =
     file.size <= MAX_PICTURE_FILE_BYTES ? new Uint8Array(await file.arrayBuffer()) : undefined;
-  const refused = pictureTooLarge(file.size, bytes);
+  const refused = pictureRefusal(file.size, bytes);
   if (refused || !bytes) throw new Error(refused);
   // An animated GIF becomes an animated item; a still one, a picture.
   if (/\.gif$/i.test(file.name) || file.type === 'image/gif') {

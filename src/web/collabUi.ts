@@ -442,6 +442,7 @@ function people(stage: CollabStage): HTMLElement {
       p.me ? ' (you)' : '',
       p.me ? '' : h('span', { class: 'hint' }, ` · ${p.connection} · ${model}`),
       p.error ? h('span', { class: 'hint collab-error' }, ` · ${p.error}`) : '',
+      p.note ? h('span', { class: 'hint collab-note' }, ` · ${p.note}`) : '',
       p.refusedYours ? h('span', { class: 'hint collab-error' }, ` · ${p.refusedYours}`) : '',
       p.me
         ? ''

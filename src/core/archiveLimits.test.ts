@@ -1,17 +1,18 @@
 import { unzipSync } from 'fflate';
 import { craftZip, crc32, zeros } from '../../test/support/craftedZip';
+import { avifStart, pngDeclaring, tiffStart } from '../../test/support/craftedTexture';
 import { describe, expect, it, vi } from 'vitest';
 import { fromZipFile } from '../web/fileInput';
 import {
   maxArchiveFileBytes,
   MODEL_ARCHIVE_LIMITS,
-  pictureSize,
-  pictureTooLarge,
+  MODEL_TEXTURE_LIMITS,
   SETTINGS_ARCHIVE_LIMITS,
   SHARED_HELD_BYTES,
   SHARED_MODEL_LIMITS,
   SHARED_TEXTURE_LIMITS,
 } from './archiveLimits';
+import { checkTextureSet, pictureRefusal } from './textureCaps';
 import {
   checkSharedAnnouncement,
   checkSharedTextures,
@@ -20,7 +21,14 @@ import {
   sharedRoom,
 } from './collab/sharedModel';
 import {
+  FileLimitError,
+  MocFormatError,
+  TextureFormatError,
+  TextureLimitError,
+} from 'mochi2d/headless';
+import {
   checkArchiveFileSize,
+  describeLoadError,
   fileSetFromUrl,
   fileSetFromZip,
   ModelLoadError,
@@ -66,7 +74,16 @@ describe('the caps per path', () => {
       maxTotalBytes: 160 * MB,
       maxEntries: 500,
     });
-    expect(SHARED_TEXTURE_LIMITS).toEqual({ maxSide: 8192, maxPixels: 8192 * 8192 });
+    expect(SHARED_TEXTURE_LIMITS).toEqual({
+      maxSide: 8192,
+      maxPixels: 67_108_864,
+      maxTotalPixels: 67_108_864,
+    });
+    expect(MODEL_TEXTURE_LIMITS).toEqual({
+      maxSide: 8192,
+      maxPixels: 67_108_864,
+      maxTotalPixels: 268_435_456,
+    });
     expect(SHARED_HELD_BYTES).toBe(600 * MB);
   });
 });
@@ -368,14 +385,7 @@ describe('a shared model’s announcement', () => {
 });
 
 describe('a shared model’s textures', () => {
-  const png = (w: number, h: number) => {
-    const b = new Uint8Array(33);
-    b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13], 0);
-    b.set(enc.encode('IHDR'), 12);
-    new DataView(b.buffer).setUint32(16, w);
-    new DataView(b.buffer).setUint32(20, h);
-    return b;
-  };
+  const png = (w: number, h: number) => pngDeclaring(w, h);
   const model = (...textures: Uint8Array[]) =>
     new Map<string, Uint8Array>([
       [
@@ -390,7 +400,7 @@ describe('a shared model’s textures', () => {
       ...textures.map((t, i) => [`M/t/${i}.png`, t] as [string, Uint8Array]),
     ]);
 
-  it('lets through textures up to 8192 a side and 64 Mi pixels in all', async () => {
+  it('lets through textures up to 8192 a side and 67,108,864 pixels in all', async () => {
     expect(await checkSharedTextures(model(png(8192, 8192)))).toBeUndefined();
     expect(
       await checkSharedTextures(
@@ -406,17 +416,49 @@ describe('a shared model’s textures', () => {
     });
   });
 
-  it('refuses textures that come to more than 64 Mi pixels together', async () => {
+  it('refuses textures that come to more than 67,108,864 pixels together', async () => {
     expect(await checkSharedTextures(model(png(8192, 8192), png(1024, 1024)))).toEqual({
       problem: 'too-large',
       detail: 'Its textures come to 68,157,440 pixels; the most in all is 67,108,864.',
     });
   });
 
-  it('calls damaged a texture that is no picture, or a model without settings', async () => {
+  it('calls damaged a lying texture, one that is no picture, or a model without settings', async () => {
+    expect(await checkSharedTextures(model(pngDeclaring(30000, 30000, true)))).toEqual({
+      problem: 'damaged',
+      detail:
+        'Its texture “t/0.png” isn’t a picture we can read: it is damaged, or shorter than the size it declares.',
+    });
     expect((await checkSharedTextures(model(enc.encode('not a png'))))?.problem).toBe('damaged');
     expect((await checkSharedTextures(new Map([['x.bin', new Uint8Array(1)]])))?.problem).toBe(
       'damaged',
+    );
+  });
+
+  it('names a format it doesn’t open', async () => {
+    expect(await checkSharedTextures(model(avifStart()))).toEqual({
+      problem: 'unsupported',
+      detail:
+        'Its texture “t/0.png” is an AVIF picture, which we don’t open. Save it as PNG and try again.',
+    });
+    expect((await checkSharedTextures(model(tiffStart())))?.detail).toMatch(/is a TIFF picture/);
+  });
+});
+
+describe('the texture caps of a model or an item opened here', () => {
+  const set = (...t: Uint8Array[]) => t.map((bytes, i) => ({ path: `t${i}.png`, bytes }));
+  it('lets through 8192 a side, and up to 268,435,456 pixels a model', () => {
+    expect(
+      checkTextureSet(set(...Array(4).fill(pngDeclaring(8192, 8192))), MODEL_TEXTURE_LIMITS),
+    ).toBeUndefined();
+  });
+  it('refuses more, and names the cap', () => {
+    expect(
+      checkTextureSet(set(...Array(5).fill(pngDeclaring(8192, 8192))), MODEL_TEXTURE_LIMITS)
+        ?.detail,
+    ).toBe('Its textures come to 335,544,320 pixels; the most in all is 268,435,456.');
+    expect(checkTextureSet(set(pngDeclaring(8193, 16)), MODEL_TEXTURE_LIMITS)?.detail).toBe(
+      'Its texture “t0.png” is 8,193 × 16 pixels; the most is 8,192 a side.',
     );
   });
 });
@@ -431,27 +473,14 @@ describe('a picture dropped on the stage', () => {
     new DataView(b.buffer).setUint32(20, h);
     return b;
   };
-  const jpeg = (w: number, h: number) =>
-    new Uint8Array([
-      0xff,
-      0xd8,
-      0xff,
-      0xe0,
-      0,
-      4,
-      0,
-      0,
-      0xff,
-      0xc0,
-      0,
-      11,
-      8,
-      h >> 8,
-      h & 255,
-      w >> 8,
-      w & 255,
-      3,
-    ]);
+  /** A JPEG's start and frame header, padded to a length that can hold the size it declares. */
+  const jpeg = (w: number, h: number) => {
+    const head = [0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 11, 8];
+    head.push(h >> 8, h & 255, w >> 8, w & 255, 3);
+    const b = new Uint8Array(head.length + Math.ceil((w * h) / 64 / 4) + 64);
+    b.set(head);
+    return b;
+  };
   const webp = (w: number, h: number) => {
     const b = new Uint8Array(30);
     b.set(enc.encode('RIFF'), 0);
@@ -471,22 +500,77 @@ describe('a picture dropped on the stage', () => {
     return b;
   };
 
-  it('reads the declared size of PNG, JPEG, GIF and WebP', () => {
-    expect(pictureSize(png(30000, 20000))).toEqual({ width: 30000, height: 20000 });
-    expect(pictureSize(jpeg(4000, 3000))).toEqual({ width: 4000, height: 3000 });
-    expect(pictureSize(gif(640, 480))).toEqual({ width: 640, height: 480 });
-    expect(pictureSize(webp(16383, 16383))).toEqual({ width: 16383, height: 16383 });
-    expect(pictureSize(enc.encode('not a picture'))).toBeUndefined();
-  });
-
-  it('refuses one that would decode to more than 64 million pixels, or a file over 64 MB', () => {
-    expect(pictureTooLarge(1000, png(8000, 6000))).toBeUndefined();
-    expect(pictureTooLarge(1000, png(30000, 20000))).toBe(
+  it('reads the declared size of PNG, JPEG, GIF and WebP, and refuses past 64 million pixels', () => {
+    expect(pictureRefusal(1000, pngDeclaring(8000, 6000))).toBeUndefined();
+    expect(pictureRefusal(1000, pngDeclaring(30000, 20000))).toBe(
       'This picture is larger than we accept. It is 30,000 × 20,000 pixels; the most is 64 million pixels.',
     );
-    expect(pictureTooLarge(1000, webp(16383, 16383))).toMatch(/16,383 × 16,383 pixels/);
-    expect(pictureTooLarge(65 * MB)).toBe(
+    expect(pictureRefusal(1000, jpeg(4000, 3000))).toBeUndefined();
+    expect(pictureRefusal(1000, jpeg(12000, 9000))).toMatch(/12,000 × 9,000 pixels/);
+    expect(pictureRefusal(1000, gif(640, 480))).toBeUndefined();
+    expect(pictureRefusal(1000, webp(16383, 16383))).toMatch(/16,383 × 16,383 pixels/);
+  });
+
+  it('refuses a lying picture, one it can’t read, a format it doesn’t open, or a file over 64 MB', () => {
+    expect(pictureRefusal(1000, pngDeclaring(30000, 30000, true))).toBe(
+      'This picture can’t be read: it is damaged, or shorter than the size it declares.',
+    );
+    expect(pictureRefusal(1000, enc.encode('not a picture'))).toBe(
+      'This picture can’t be read: it is damaged, or shorter than the size it declares.',
+    );
+    expect(pictureRefusal(1000, avifStart())).toBe(
+      'This picture is an AVIF file, which we don’t open. Save it as PNG, JPEG or WebP and add it again.',
+    );
+    expect(pictureRefusal(65 * MB)).toBe(
       'This picture is larger than we accept. The file is 65 MB; the most is 64 MB.',
     );
+  });
+});
+
+describe('Mochi2D’s refusals, said plainly', () => {
+  it('a texture past a cap', () => {
+    expect(
+      describeLoadError(
+        new TextureLimitError('t/a.png', 'side', 8192, 9000, 9000, 10),
+        'This model',
+      ),
+    ).toEqual({
+      problem: 'too-large',
+      message:
+        'This model is larger than we accept. Its texture “t/a.png” is 9,000 × 10 pixels; the most is 8,192 a side.',
+    });
+    expect(
+      describeLoadError(
+        new TextureLimitError('t/b.png', 'total', 2 ** 26, 68_157_440, 1024, 1024),
+        'Their model',
+      )?.message,
+    ).toBe(
+      'Their model is larger than we accept. Its textures come to 68,157,440 pixels; the most in all is 67,108,864.',
+    );
+  });
+
+  it('a texture in a format it doesn’t open, or a damaged one', () => {
+    const e = new TextureFormatError('t/a.png', 'x');
+    expect(describeLoadError(e, 'This model', () => avifStart())).toEqual({
+      problem: 'unsupported',
+      message:
+        'This model can’t be opened. Its texture “t/a.png” is an AVIF picture, which we don’t open. Save it as PNG and try again.',
+    });
+    expect(describeLoadError(e, 'This item', () => pngDeclaring(9, 9, true))).toEqual({
+      problem: 'damaged',
+      message:
+        'This item can’t be opened. Its texture “t/a.png” isn’t a picture we can read: it is damaged, or shorter than the size it declares. Download or copy it again.',
+    });
+  });
+
+  it('a file past a cap, a damaged .moc3, and anything else left alone', () => {
+    expect(
+      describeLoadError(new FileLimitError('m.moc3', 'file', 64 * MB, 70 * MB), 'This model')
+        ?.message,
+    ).toBe(
+      'This model is larger than we accept. “m.moc3” is 70 MB; the most for one file is 64 MB.',
+    );
+    expect(describeLoadError(new MocFormatError('bad'), 'This model')?.problem).toBe('damaged');
+    expect(describeLoadError(new Error('other'), 'This model')).toBeUndefined();
   });
 });

@@ -1,17 +1,20 @@
 import type { ArchiveLimits } from 'mochi2d/headless';
 import {
-  ArchiveLimitError,
   sourceFromZip,
-  UnsupportedArchiveError,
-  ZipFormatError,
+  type ArchiveLimitError,
+  type FileLimitError,
+  type TextureFormatError,
+  type TextureLimitError,
 } from 'mochi2d/headless';
 import {
   fileTooLargeMessage,
+  formatBytes,
   tooLargeDetail,
   maxArchiveFileBytes,
   MODEL_ARCHIVE_LIMITS,
   type ArchiveProblem,
 } from './archiveLimits';
+import { textureFormatDetail, textureTooLargeDetail } from './textureCaps';
 
 const utf8 = new TextDecoder();
 const strFromU8 = (d: Uint8Array): string => utf8.decode(d);
@@ -30,6 +33,15 @@ export interface ModelFileSet {
 }
 
 /**
+ * Whether `e` is Mochi2D's error of this name. By name, not by class: the
+ * pages bundle Mochi2D's entry points separately, each with its own copy of
+ * the classes, and every Mochi2D error sets its `name`.
+ */
+function mochiError<T extends Error>(e: unknown, name: string): e is T {
+  return e instanceof Error && e.name === name;
+}
+
+/**
  * Says plainly what went wrong with an archive: too large (a cap) or
  * damaged (a zip that isn't one, or whose data doesn't match its records).
  * `what` names it: "This model", "This item", "This settings file".
@@ -38,16 +50,62 @@ export function describeArchiveError(
   e: unknown,
   what: string,
 ): { problem: ArchiveProblem; message: string } | undefined {
-  if (e instanceof ArchiveLimitError)
+  if (mochiError<ArchiveLimitError>(e, 'ArchiveLimitError'))
     return {
       problem: 'too-large',
       message: `${what} is larger than we accept. ${tooLargeDetail(e.kind, e.limit, e.size, e.kind === 'entry' ? e.path : undefined)}`,
     };
-  if (e instanceof UnsupportedArchiveError) return { problem: 'unsupported', message: e.message };
-  if (e instanceof ZipFormatError)
+  if (mochiError(e, 'UnsupportedArchiveError'))
+    return { problem: 'unsupported', message: e.message };
+  if (mochiError(e, 'ZipFormatError'))
     return {
       problem: 'damaged',
       message: `${what} is a damaged zip, so it can’t be opened. Download or copy it again. (${e.message})`,
+    };
+  return undefined;
+}
+
+/**
+ * Says plainly why Mochi2D refused to load a model or an item, or
+ * undefined for any other error: an archive (above), a texture past its
+ * caps or in a format it doesn't read, a file past its caps, a damaged
+ * `.moc3`. `head` gives a texture's first bytes by its path, to name its
+ * format.
+ */
+export function describeLoadError(
+  e: unknown,
+  what: string,
+  head?: (path: string) => Uint8Array | undefined,
+): { problem: ArchiveProblem; message: string } | undefined {
+  const archive = describeArchiveError(e, what);
+  if (archive) return archive;
+  if (mochiError<TextureLimitError>(e, 'TextureLimitError'))
+    return {
+      problem: 'too-large',
+      message: `${what} is larger than we accept. ${textureTooLargeDetail(e.kind, e.limit, e.size, e.path, e.width, e.height)}`,
+    };
+  if (mochiError<TextureFormatError>(e, 'TextureFormatError')) {
+    const d = textureFormatDetail(e.path, head?.(e.path));
+    return {
+      problem: d.problem,
+      message:
+        d.problem === 'unsupported'
+          ? `${what} can’t be opened. ${d.detail}`
+          : `${what} can’t be opened. ${d.detail} Download or copy it again.`,
+    };
+  }
+  if (mochiError<FileLimitError>(e, 'FileLimitError'))
+    return {
+      problem: 'too-large',
+      message:
+        e.kind === 'file'
+          ? `${what} is larger than we accept. “${e.path}” is ${formatBytes(e.size)}; the most for one file is ${formatBytes(e.limit)}.`
+          : `${what} is larger than we accept. ${tooLargeDetail('total', e.limit, e.size)}`,
+    };
+  if (mochiError(e, 'MocFormatError'))
+    return {
+      problem: 'damaged',
+      message: `${what} can’t be opened: its .moc3 file is damaged. Download or copy it again. (${e.message})`,
     };
   return undefined;
 }

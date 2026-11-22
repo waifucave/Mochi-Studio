@@ -137,6 +137,8 @@ export interface Participant {
   /** Smoothing delay, ms (local only). */
   delayMs: number;
   error?: string;
+  /** Something to know about their shared model that isn't an error (its sounds). */
+  note?: string;
   /** They refused the model this app shared with them, and why (for this app's list). */
   refusedYours?: string;
 }
@@ -685,9 +687,13 @@ export class CollabSession {
 
   /** This app's model changed (or its sharing): tell everyone. */
   async announce(): Promise<void> {
-    this.serial++;
+    const serial = ++this.serial;
     for (const p of this.participants.values()) p.refusedYours = undefined;
-    this.announced = await this.o.local.announcement(this.serial);
+    const a = await this.o.local.announcement(serial);
+    // A newer one began meanwhile (the model changed again, or its sharing): it is the one
+    // sent, whichever is ready first.
+    if (serial !== this.serial) return;
+    this.announced = a;
     this.sender = this.announced ? new ParamSender(this.announced.table) : undefined;
     for (const peer of this.links.keys()) await this.announceTo(peer);
   }
@@ -787,7 +793,9 @@ export class CollabSession {
       case 'refused': {
         // They didn't take the model this app shared: say so beside their name.
         const problem =
-          m.problem === 'too-large' || m.problem === 'no-room' ? m.problem : 'damaged';
+          m.problem === 'too-large' || m.problem === 'no-room' || m.problem === 'unsupported'
+            ? m.problem
+            : 'damaged';
         if (m.serial !== this.announced?.serial || this.announced?.mode !== 'shared') break;
         p.refusedYours = refusalForSender({
           problem,
@@ -954,6 +962,7 @@ export class CollabSession {
     this.checking.delete(p.id);
     this.waiting.delete(p.id);
     p.received = 0;
+    p.note = undefined;
     if (p.files) {
       p.files = undefined;
       this.listener.modelFiles?.(p.id, undefined);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pngDeclaring } from '../../../test/support/craftedTexture';
 import {
   allocateOrder,
   availableSpots,
@@ -103,7 +104,12 @@ describe('custom images', () => {
   });
 
   it('applies the limits (758)', () => {
-    expect(checkCustomImage(png(64, 2048))).toMatchObject({ type: 'PNG' });
+    expect(checkCustomImage(pngDeclaring(64, 2048))).toMatchObject({ type: 'PNG' });
+    // A size its file can't hold: crafted, refused before anything decodes it.
+    expect(checkCustomImage(png(64, 2048))).toEqual({
+      errorID: 758,
+      message: 'The image is damaged, or shorter than the size it declares.',
+    });
     expect(checkCustomImage(png(63, 100))).toMatchObject({ errorID: 758 });
     expect(checkCustomImage(png(100, 2049))).toMatchObject({ errorID: 758 });
     expect(checkCustomImage(undefined)).toMatchObject({ errorID: 758 });

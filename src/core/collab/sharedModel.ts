@@ -1,12 +1,12 @@
 import {
   formatBytes,
-  pictureSize,
   SHARED_HELD_BYTES,
   SHARED_MODEL_LIMITS,
   SHARED_TEXTURE_LIMITS,
   tooLargeDetail,
 } from '../archiveLimits';
 import { MemoryFileSet, openModel } from '../modelFiles';
+import { checkTextureSet } from '../textureCaps';
 
 /**
  * The caps on a shared model (src/core/archiveLimits.ts), checked by both
@@ -14,7 +14,10 @@ import { MemoryFileSet, openModel } from '../modelFiles';
  * receiver checks an announcement against them before it sets aside any
  * memory for the files.
  */
-export type SharedRefusal = { problem: 'too-large' | 'damaged' | 'no-room'; detail: string };
+export type SharedRefusal = {
+  problem: 'too-large' | 'damaged' | 'unsupported' | 'no-room';
+  detail: string;
+};
 
 export const MAX_SHARED_PATH = 1024;
 
@@ -82,10 +85,9 @@ export function checkSharedAnnouncement(
 
 /**
  * Checks a shared model's textures by their headers, before anything
- * decodes them: each at most 8192 pixels a side, all together at most
- * 64 Mi pixels. The files are the model's, by path; undefined when they
- * may be shown. (Mochi2D will check this itself; until then, the app does
- * on this path, where the model comes from someone else's computer.)
+ * decodes them, with Mochi2D's header reader and the caps the model is then
+ * loaded with (SHARED_TEXTURE_LIMITS): 8192 pixels a side and 67,108,864 in
+ * all. The files are the model's, by path; undefined when they may be shown.
  */
 export async function checkSharedTextures(
   files: ReadonlyMap<string, Uint8Array>,
@@ -97,25 +99,12 @@ export async function checkSharedTextures(
   } catch (e) {
     return { problem: 'damaged', detail: (e as Error).message };
   }
-  let pixels = 0;
+  const textures = [];
   for (const t of model.manifest.textures) {
     if (!model.files.has(t)) continue; // the load says what is missing
-    const size = pictureSize(await model.files.read(t));
-    if (!size)
-      return { problem: 'damaged', detail: `Its texture “${t}” isn’t a picture we can read.` };
-    if (size.width > limits.maxSide || size.height > limits.maxSide)
-      return {
-        problem: 'too-large',
-        detail: `Its texture “${t}” is ${size.width.toLocaleString('en')} × ${size.height.toLocaleString('en')} pixels; the most is ${limits.maxSide.toLocaleString('en')} a side.`,
-      };
-    pixels += size.width * size.height;
+    textures.push({ path: t, bytes: await model.files.read(t) });
   }
-  if (pixels > limits.maxPixels)
-    return {
-      problem: 'too-large',
-      detail: `Its textures come to ${pixels.toLocaleString('en')} pixels; the most in all is ${limits.maxPixels.toLocaleString('en')}.`,
-    };
-  return undefined;
+  return checkTextureSet(textures, limits);
 }
 
 /**
@@ -134,6 +123,42 @@ export function sharedRoom(
   };
 }
 
+/**
+ * The motion sounds a model's settings name (each once), from its files by
+ * path; none when its settings can't be read.
+ */
+export function motionSoundPaths(files: ReadonlyMap<string, Uint8Array>): string[] {
+  const settings = [...files.keys()].find((p) => /\.model3\.json$/i.test(p));
+  if (!settings) return [];
+  let json: { FileReferences?: { Motions?: Record<string, Array<{ Sound?: unknown }>> } };
+  try {
+    json = JSON.parse(new TextDecoder().decode(files.get(settings)));
+  } catch {
+    return [];
+  }
+  const sounds = new Set<string>();
+  for (const group of Object.values(json?.FileReferences?.Motions ?? {}))
+    if (Array.isArray(group))
+      for (const m of group) if (typeof m?.Sound === 'string' && m.Sound) sounds.add(m.Sound);
+  return [...sounds];
+}
+
+/**
+ * What the receiver is told about a shared model's motion sounds: a shared
+ * model plays none of its own sounds here, whatever their format (it is an
+ * item, moved by its owner's parameters). Undefined when it names none.
+ */
+export function sharedSoundNote(files: ReadonlyMap<string, Uint8Array>): string | undefined {
+  const sounds = motionSoundPaths(files);
+  if (!sounds.length) return undefined;
+  const names = sounds
+    .slice(0, 3)
+    .map((s) => `“${s}”`)
+    .join(', ');
+  const more = sounds.length > 3 ? ` and ${sounds.length - 3} more` : '';
+  return `Their model’s motion sounds don’t play here (${names}${more}): a shared model plays none of its own sounds.`;
+}
+
 /** What the receiver sees. */
 export function refusalForReceiver(r: SharedRefusal): string {
   switch (r.problem) {
@@ -141,6 +166,8 @@ export function refusalForReceiver(r: SharedRefusal): string {
       return `Their model is larger than we accept, so it isn’t shared. ${r.detail}`;
     case 'damaged':
       return `Their model arrived damaged, so it isn’t shared. ${r.detail}`;
+    case 'unsupported':
+      return `Their model uses a picture format we don’t open, so it isn’t shared. ${r.detail}`;
     case 'no-room':
       return `There is no room for their model now. ${r.detail}`;
   }
@@ -153,6 +180,8 @@ export function refusalForSender(r: SharedRefusal): string {
       return `Your model is larger than their app accepts, so they don’t have it. ${r.detail}`;
     case 'damaged':
       return `Your model reached them damaged, so they don’t have it. ${r.detail}`;
+    case 'unsupported':
+      return `Your model uses a picture format their app doesn’t open, so they don’t have it. ${r.detail}`;
     case 'no-room':
       return 'Their app has no room for your model now. It goes to them by itself when there is room.';
   }

@@ -344,6 +344,7 @@ export class Studio implements StudioApi {
     });
     runtime.on('motionFinished', (p) => this.events.emit('motionFinished', p));
     runtime.on('itemMoved', () => this.saveItems());
+    runtime.on('modelNotice', ({ text }) => this.events.emit('log', { text, kind: 'error' }));
     sync?.onMessage((m) => this.onSync(m));
     this.commands = new CommandRegistry<StudioApi>(this, studioCommands());
     this.ready = store.getApp().then(
@@ -451,6 +452,11 @@ export class Studio implements StudioApi {
     this.modelFilesForSync = [];
     this.sync?.post({ type: 'unload' });
     this.events.emit('modelUnloaded', undefined);
+  }
+
+  /** A line for the log (main menu → Log). */
+  log(text: string, kind: 'info' | 'error' = 'info'): void {
+    this.events.emit('log', { text, kind });
   }
 
   // --- the command layer and its needs --------------------------------------

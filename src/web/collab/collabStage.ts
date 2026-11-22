@@ -11,11 +11,15 @@
  *   shared order (in front of this app's model or behind it), moving with
  *   their smoothed parameters. Hidden ones are hidden here only.
  */
-import { checkSharedTextures, sharedModelTooLarge } from '../../core/collab/sharedModel';
+import {
+  checkSharedTextures,
+  sharedModelTooLarge,
+  sharedSoundNote,
+} from '../../core/collab/sharedModel';
 import { COLLAB_ITEM_PREFIX, stageOrder, type StagePlace } from '../../core/collab/stage';
 import { imageItemFiles } from '../../core/imageItem';
 import { canvasPng, pngContext } from '../canvasPng';
-import { MemoryFileSet } from '../../core/modelFiles';
+import { MemoryFileSet, ModelLoadError } from '../../core/modelFiles';
 import { AVATAR_FIT, AvatarVideoReceiver, AvatarVideoSender, avatarFrameSize } from './video';
 import type { MochiRuntime } from '../mochiRuntime';
 import type { Studio } from '../studio';
@@ -87,6 +91,7 @@ export class CollabStage implements CollabApi {
     const studio = this.studio;
     return {
       announcement: async (serial): Promise<ModelAnnouncement | undefined> => {
+        this.announcing = serial;
         const m = studio.model;
         if (!m || !studio.settings) return undefined;
         const files = m.files.paths().sort();
@@ -95,13 +100,15 @@ export class CollabStage implements CollabApi {
         const bytes = sizes.reduce((a, b) => a + b, 0);
         let mode: 'shared' | 'video' =
           studio.settings.collabSharing === 'shared' ? 'shared' : 'video';
-        this.sharingNote = undefined;
         // Within the caps the others check (src/core/collab/sharedModel.ts).
         const tooLarge =
           mode === 'shared'
             ? (sharedModelTooLarge(files.map((path, i) => ({ path, size: sizes[i]! }))) ??
               (await checkSharedTextures(new Map(files.map((path, i) => [path, data[i]!])))))
             : undefined;
+        // A newer announcement began while this one read: it alone sets what is sent.
+        if (serial !== this.announcing) return undefined;
+        this.sharingNote = undefined;
         if (tooLarge) {
           mode = 'video';
           this.sharingNote =
@@ -144,6 +151,8 @@ export class CollabStage implements CollabApi {
 
   /** The video avatar's size while this app shares as video, and the connections it has. */
   private videoSize: { width: number; height: number } | undefined;
+  /** The serial of the newest announcement being made. */
+  private announcing = 0;
   private peerCount = 0;
 
   /**
@@ -481,6 +490,8 @@ export class CollabStage implements CollabApi {
         const q = this.session?.participants.get(peer);
         if (!q?.files) this.runtime.removeItem(id);
         else {
+          q.note = sharedSoundNote(files);
+          if (q.note) this.studio.log(`${q.name}: ${q.note}`);
           this.loaded.add(id);
           this.avatars.set(peer, {
             kind: 'shared',
@@ -493,7 +504,12 @@ export class CollabStage implements CollabApi {
         }
       })
       .catch((e: Error) => {
-        if (p) p.error = `Their model could not be shown: ${e.message}`;
+        // A refusal says so itself ("Their model is larger than we accept…").
+        if (p)
+          p.error =
+            e instanceof ModelLoadError
+              ? e.message
+              : `Their model could not be shown: ${e.message}`;
       })
       .finally(() => {
         this.loading.delete(id);

@@ -23,7 +23,7 @@ The pictures are generated with the sample model and a recorded, synthetic
 tracking session (`npm run screenshots`).
 
 > **Status:** a working app, in the browser and as an unsigned desktop app
-> for Linux, Windows and macOS, on Mochi2D 0.23.0 (vendored in `vendor/`).
+> for Linux, Windows and macOS, on Mochi2D 0.24.0 (vendored in `vendor/`).
 > Face, hand and voice tracking, items, hotkeys, the settings import, the
 > plugin API, the agent API, Spout2 output (Windows), a virtual camera
 > (Linux) and collaborations are built and tested. The virtual camera on

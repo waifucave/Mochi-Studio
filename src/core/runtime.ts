@@ -52,6 +52,8 @@ export type RuntimeEvents = {
   motionUserEvent: { value: string };
   /** An item was moved by dragging it on the stage. */
   itemMoved: { id: string };
+  /** A problem the renderer found after the load: a motion sound that didn't play. */
+  modelNotice: { text: string };
 };
 
 /** Automatic behaviours the runtime can switch. */

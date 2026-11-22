@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { zipSync } from 'fflate';
 import type { Page } from 'playwright-core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startSignalingServer } from '../../collab/server';
 import { startLocalWorker } from '../../collab/worker/local';
+import { syntheticModelFiles } from '../support/syntheticModel';
 import { startHarness, syntheticModelZip, type Harness } from './harness';
 
 /**
@@ -89,6 +92,7 @@ const session = (p: Page) =>
         place: x.place,
         hidden: x.hidden,
         error: x.error,
+        note: x.note,
       })),
     };
   });
@@ -546,36 +550,52 @@ describe('collaboration, with the local signaling server', () => {
 
   it('checks a shared model’s textures by their headers before it shows it, and tells the sender', async () => {
     const hana = (await person(guest, 'Hana'))!;
-    // Kiri's app sends its texture with a header altered on the way (as a crafted app could):
-    // 9000 pixels wide, the file's size unchanged.
-    await guest.evaluate(() => {
-      const s = (window as any).mochiCollab.session;
-      const read = s.o.local.readFile;
-      (window as any).realReadFile = read;
-      s.o.local.readFile = async (path: string) => {
-        const d: Uint8Array = await read(path);
-        if (!path.endsWith('.png')) return d;
-        const c = d.slice();
-        new DataView(c.buffer).setUint32(16, 9000);
-        return c;
-      };
-      return s.announce();
-    });
+    // Kiri's app sends its texture with a header altered on the way (as a crafted app could),
+    // the file's size unchanged: first a lie (30,000 × 30,000 in 178 bytes), then a size the
+    // file could hold (9,000 × 1), past the cap of a side.
+    const alter = (w: number, h: number) =>
+      guest.evaluate(
+        ({ w, h }) => {
+          const s = (window as any).mochiCollab.session;
+          const read = (window as any).realReadFile ?? s.o.local.readFile;
+          (window as any).realReadFile = read;
+          s.o.local.readFile = async (path: string) => {
+            const d: Uint8Array = await read(path);
+            if (!path.endsWith('.png')) return d;
+            const c = d.slice();
+            new DataView(c.buffer).setUint32(16, w);
+            new DataView(c.buffer).setUint32(20, h);
+            return c;
+          };
+          return s.announce();
+        },
+        { w, h },
+      );
+    const refusedYours = () =>
+      guest.evaluate(
+        (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
+        hana.id,
+      );
+    await alter(30000, 30000);
     await expect
       .poll(async () => (await person(host, 'Kiri'))?.error, { timeout: 30_000 })
       .toMatch(
-        /^Their model is larger than we accept, so it isn’t shared\. Its texture “.*\.png” is 9,000 × \d[\d,]* pixels; the most is 8,192 a side\.$/,
+        /^Their model arrived damaged, so it isn’t shared\. Its texture “.*\.png” isn’t a picture we can read: it is damaged, or shorter than the size it declares\.$/,
       );
     expect((await person(host, 'Kiri'))!.files).toBe(0);
     await expect
-      .poll(
-        () =>
-          guest.evaluate(
-            (id) => (window as any).mochiCollab.session.participants.get(id).refusedYours,
-            hana.id,
-          ),
-        { timeout: 15_000 },
-      )
+      .poll(refusedYours, { timeout: 15_000 })
+      .toMatch(/^Your model reached them damaged, so they don’t have it\. Its texture/);
+
+    await alter(9000, 1);
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.error, { timeout: 30_000 })
+      .toMatch(
+        /^Their model is larger than we accept, so it isn’t shared\. Its texture “.*\.png” is 9,000 × 1 pixels; the most is 8,192 a side\.$/,
+      );
+    expect((await person(host, 'Kiri'))!.files).toBe(0);
+    await expect
+      .poll(refusedYours, { timeout: 15_000 })
       .toMatch(/^Your model is larger than their app accepts, so they don’t have it\. Its texture/);
     // Sent as it is, it is shown again.
     await guest.evaluate(() => {
@@ -592,6 +612,54 @@ describe('collaboration, with the local signaling server', () => {
         { timeout: 30_000 },
       )
       .toBe(true);
+  });
+
+  it('tells the receiver that a shared model’s motion sounds don’t play here', async () => {
+    // Kiri opens a model whose motion has a compressed sound (it plays on Kiri's own stage).
+    const files = syntheticModelFiles();
+    const settings = JSON.parse(new TextDecoder().decode(files['test.model3.json']));
+    settings.FileReferences.Motions.Wave[0].Sound = 'sounds/tone.ogg';
+    files['test.model3.json'] = new TextEncoder().encode(JSON.stringify(settings));
+    files['sounds/tone.ogg'] = new Uint8Array(readFileSync('test/fixtures/tone.ogg'));
+    const voice = zipSync(
+      Object.fromEntries(Object.entries(files).map(([p, d]) => [`Voice/${p}`, d])),
+    );
+    const loadOn = (zip: Uint8Array, name: string) =>
+      guest.locator('#model-zip').setInputFiles({
+        name,
+        mimeType: 'application/zip',
+        buffer: Buffer.from(zip),
+      });
+    await loadOn(voice, 'Voice.zip');
+    // Settings are the model's own: this one shares its files too.
+    await guest.waitForFunction(
+      () => (window as any).mochiStudio.model?.files.label === 'Voice.zip',
+    );
+    await guest.evaluate(() => {
+      (window as any).mochiStudio.updateSettings({ collabSharing: 'shared' });
+      return (window as any).mochiCollab.session.announce();
+    });
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.note, { timeout: 30_000 })
+      .toBe(
+        'Their model’s motion sounds don’t play here (“sounds/tone.ogg”): a shared model plays none of its own sounds.',
+      );
+    expect((await person(host, 'Kiri'))!.files).toBeGreaterThan(0);
+    expect(
+      await host.evaluate(() =>
+        (window as any).mochiLog.entries.some((e: any) =>
+          /^Kiri: Their model’s motion sounds don’t play here/.test(e.text),
+        ),
+      ),
+    ).toBe(true);
+    // Back to the model without sounds: the note goes.
+    await loadOn(syntheticModelZip(), 'Test.zip');
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.note, { timeout: 30_000 })
+      .toBeUndefined();
+    await expect
+      .poll(async () => (await person(host, 'Kiri'))?.files ?? 0, { timeout: 30_000 })
+      .toBeGreaterThan(0);
   });
 
   it('holds at most 600 MB of others’ shared models: the newest waits, says so, and comes when there is room', async () => {

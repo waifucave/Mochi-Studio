@@ -200,8 +200,10 @@ for frame-by-frame effects.
 - **Kept** in memory only, never on disk, and deleted when the sender
   leaves or is removed, or the session ends.
 - **Limits on a model:** 160 MB in all, 32 MB a file and 500 files; its
-  textures at most 8192 pixels a side and 67,108,864 pixels together
-  (8192 × 8192: one texture of that size, or four of 4096 × 4096). The largest models we
+  textures PNG, JPEG, WebP, GIF, BMP or ICO files, at most 8192 pixels a
+  side and 67,108,864 pixels together (8192 × 8192: one texture of that
+  size, or four of 4096 × 4096), each file long enough for the size it
+  claims. The largest models we
   know of are about half of each. A model over any of these always goes
   as video, and the sender's Collab tab says which limit. (The figures are
   set in `src/core/archiveLimits.ts`: `SHARED_MODEL_LIMITS`,
@@ -213,9 +215,14 @@ for frame-by-frame effects.
   load another). Video-only models don't count: they always come.
 - **Checked before anything is set aside:** each app checks a model's list
   of files against these limits before it sets any memory aside, and its
-  textures' headers before anything decodes them. If one refuses it, it
-  says why (**too large**, **damaged** or **no room**), and the sender's
-  list shows the reason beside that person's name.
+  textures' headers before anything decodes them (with Mochi2D's header
+  reader, and the same caps the model is then loaded with). If one refuses
+  it, it says why (**too large**, **damaged**, a picture format it doesn't
+  open, or **no room**), and the sender's list shows the reason beside that
+  person's name.
+- **No sounds:** a shared model plays none of its own motion sounds on the
+  others' screens (it moves by its owner's parameters). Their Collab tab
+  says so beside the sender's name when the model has some.
 - **No file server:** the sender pays the upload once per receiver, and no
   third party holds the files.
 - **What memory-only can't stop:** a participant with the right tools
