@@ -1038,6 +1038,49 @@ describe('collaboration through a relay only (“Hide my address”)', () => {
     expect((await person(guest, 'Hana'))!.connection).toBe('failed');
     await host.evaluate(() => (window as any).mochiCollab.leave());
   });
+
+  it('runs the video avatar’s page only while there is someone to send it to', async () => {
+    for (const p of [guest, third])
+      await p.evaluate((server) => {
+        (window as any).mochiCollab.leave();
+        (window as any).mochiStudio.setCollabSettings({ server, hideAddress: false });
+      }, server.wsUrl);
+    const running = () => third.evaluate(() => !!(window as any).mochiCollab.sender);
+    // Ume (video only) hosts alone: no page, even when the model is announced again.
+    await third.evaluate(() => (window as any).mochiCollab.host());
+    await expect.poll(async () => (await session(third))?.status).toBe('hosting');
+    await third.evaluate(() => (window as any).mochiCollab.reannounce());
+    await third.waitForTimeout(1000);
+    expect(await running()).toBe(false);
+    // Kiri joins: the page starts with the connection, and Kiri gets its frames.
+    await guest.evaluate((l) => (window as any).mochiCollab.join(l), (await session(third))!.link!);
+    await expect.poll(async () => (await session(third))?.knocks.length).toBe(1);
+    await third.evaluate(() => {
+      const s = (window as any).mochiCollab.session;
+      s.admit([...s.knocks.keys()][0]);
+    });
+    await expect.poll(running, { timeout: 15_000 }).toBe(true);
+    const ume = (await session(third))!.you;
+    // Kiri's window is shown, so it draws (and takes the video's frames).
+    await guest.evaluate(() => ((window as any).mochiTestShown = true));
+    await expect
+      .poll(
+        () =>
+          guest.evaluate(
+            (id) => (window as any).mochiCollab.avatars.get(id)?.receiver?.frames ?? 0,
+            ume,
+          ),
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+    // Kiri leaves: Ume is alone again, and the page stops.
+    await guest.evaluate(() => {
+      (window as any).mochiTestShown = false;
+      (window as any).mochiCollab.leave();
+    });
+    await expect.poll(running, { timeout: 30_000 }).toBe(false);
+    await third.evaluate(() => (window as any).mochiCollab.leave());
+  });
 });
 
 describe('collaboration with no server set', () => {

@@ -134,20 +134,27 @@ describe('a control window out of sight advances without drawing', () => {
       clearInterval(w.moving);
       w.mochiStudio.setOverrides({ ParamAngleX: 17 });
     });
-    // The view shows what the hidden window computed for it (the same blend of the idle
-    // animation and the value), not a frame behind.
+    // The view gets what the hidden window computed for it, not a frame behind: the
+    // value it was sent last is the window's latest. (Each page also plays the idle
+    // animation on its own clock, so the values they draw differ by the idle's phase.)
+    // On a time-out, the message says what was read last.
+    const reads: { mine?: number; got?: number }[] = [];
     await expect
       .poll(
         async () => {
-          const mine = await studio<number>("s.runtime.parameterValue('ParamAngleX')");
-          const shown = await out.evaluate(() =>
-            (window as any).mochiOutput.runtime.parameterValue('ParamAngleX'),
+          const mine = await studio<number | undefined>('s.lastParams.ParamAngleX');
+          const got = await out.evaluate(
+            () => (window as any).mochiOutput.params.ParamAngleX as number | undefined,
           );
-          return Math.abs(shown - mine) < 0.5 && Math.abs(mine) > 5;
+          reads.push({ mine, got });
+          return mine !== undefined && got === mine && Math.abs(mine - 17) < 0.01;
         },
-        { timeout: 5000 },
+        { timeout: 5000, message: 'the view gets what the hidden window computed' },
       )
-      .toBe(true);
+      .toBe(true)
+      .catch((e: Error) => {
+        throw new Error(`${e.message}; read last: ${JSON.stringify(reads.slice(-5))}`);
+      });
     expect(await studio<number>('s.framesPainted')).toBe(hiddenPainted);
     await page.evaluate(() => {
       const w = window as any;
@@ -169,6 +176,17 @@ describe('a control window out of sight advances without drawing', () => {
   });
 
   it('advances on the worker’s ticks without drawing when animation frames stop', async () => {
+    // The head moves, so the view has values to get (set again here, so this test
+    // doesn't depend on how the one before it ended).
+    await page.evaluate(() => {
+      const w = window as any;
+      clearInterval(w.moving);
+      const t0 = performance.now();
+      w.moving = setInterval(() => {
+        const t = (performance.now() - t0) / 1000;
+        w.mochiStudio.setOverrides({ ParamAngleX: Math.sin(t * 3) * 30 });
+      }, 10);
+    });
     // As a browser does for a minimized window: no animation frames at all.
     await page.evaluate(() => {
       const s = (window as any).mochiStudio;

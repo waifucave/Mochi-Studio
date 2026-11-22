@@ -107,6 +107,11 @@ export interface CollabLocal {
   params(): Readonly<Record<string, number>>;
   /** Where this app's avatar stands. */
   place(): StagePlace;
+  /**
+   * How many other participants this app has a connection to (or is making one to): the
+   * video avatar's page runs only while there is someone to send it to.
+   */
+  peers?(count: number): void;
 }
 
 export interface Participant {
@@ -626,6 +631,7 @@ export class CollabSession {
     );
     this.links.set(peer, link);
     if (offer) this.attachTrack(link);
+    this.o.local.peers?.(this.links.size);
   }
 
   /** The RTCConfiguration used for a participant (for tests and diagnostics). */
@@ -958,7 +964,7 @@ export class CollabSession {
   private dropParticipant(peer: string): void {
     const p = this.participants.get(peer);
     this.links.get(peer)?.close();
-    this.links.delete(peer);
+    if (this.links.delete(peer)) this.o.local.peers?.(this.links.size);
     this.stamps.delete(peer);
     this.knocks.delete(peer);
     if (p) this.dropFiles(p);

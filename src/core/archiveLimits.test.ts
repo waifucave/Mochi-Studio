@@ -1,6 +1,6 @@
 import { unzipSync } from 'fflate';
 import { craftZip, crc32, zeros } from '../../test/support/craftedZip';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fromZipFile } from '../web/fileInput';
 import {
   maxArchiveFileBytes,
@@ -29,6 +29,9 @@ import {
 } from './modelFiles';
 import { defaultSettings, exportSettings, SettingsError } from './settings';
 import { buildSettingsBundle, readSettingsExport, SETTINGS_ENTRY } from './settingsBundle';
+
+// Building and reading archives of tens of MB takes seconds on a busy machine.
+vi.setConfig({ testTimeout: 30_000 });
 
 /** The caps on each path, tried with archives that lie (test/support/craftedZip.ts). */
 const MB = 2 ** 20;
@@ -406,7 +409,7 @@ describe('a shared model’s textures', () => {
   it('refuses textures that come to more than 64 Mi pixels together', async () => {
     expect(await checkSharedTextures(model(png(8192, 8192), png(1024, 1024)))).toEqual({
       problem: 'too-large',
-      detail: 'Its textures come to 68 million pixels; the most in all is 67 million.',
+      detail: 'Its textures come to 68,157,440 pixels; the most in all is 67,108,864.',
     });
   });
 

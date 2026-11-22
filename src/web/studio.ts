@@ -508,8 +508,9 @@ export class Studio implements StudioApi {
   }
 
   async speak(audio: Uint8Array, volume: number): Promise<void> {
-    // Output views move the mouth with the same sound, without playing it.
-    this.sync?.post({ type: 'speak', audio });
+    // Output views move the mouth with the same sound, without playing it (only views that
+    // are open: each message copies the sound).
+    if (this.views.size) this.sync?.post({ type: 'speak', audio });
     await this.runtime.speak(audio, volume);
   }
 
@@ -2216,7 +2217,13 @@ export class Studio implements StudioApi {
 
   private onSync(m: SyncMessage): void {
     if (m.type === 'viewStatus') {
-      if (!this.views.has(m.viewId)) this.views.set(m.viewId, Date.now());
+      if (!this.views.has(m.viewId)) {
+        // A view open before this window (re)loaded: it never said hello here, and items go
+        // only to views this window knows. It gets them all now.
+        this.views.set(m.viewId, Date.now());
+        this.itemsSentToViews.clear();
+        this.broadcastItems();
+      }
       this.viewStatus.set(m.viewId, m);
       if (m.state === 'loading') {
         if (!this.loadingViews.has(m.viewId)) this.loadingViews.set(m.viewId, Date.now());
@@ -2256,6 +2263,15 @@ export class Studio implements StudioApi {
 
   private broadcastModel(): void {
     if (!this.sync || !this.model) return;
+    // No view known: the model's files would be copied for nobody. A view that is there all
+    // the same (open before this window loaded) answers this with hello, and gets them.
+    if (!this.views.size) {
+      this.itemsSentToViews.clear();
+      this.sync.post({ type: 'modelAvailable', key: this.model.key });
+      return;
+    }
+    // Views load the model (and its items) again: they get every item's files.
+    this.itemsSentToViews.clear();
     this.sync.post({
       type: 'model',
       key: this.model.key,
@@ -2748,11 +2764,20 @@ export class Studio implements StudioApi {
     if (this.hasViews) this.sync?.post(m);
   }
 
+  /** Items whose files output views have been sent since the last full send. */
+  private itemsSentToViews = new Set<string>();
+
+  /**
+   * The items, to output views. Their files go only while views are open (a
+   * view's hello sends everything again), and only once: an item the views
+   * have already got is sent without them (views keep what they have by
+   * id). Collaborators' avatars go only to views people see. Each message
+   * copies the files it carries, to every view.
+   */
   private broadcastItems(): void {
     if (!this.sync || !this.model) return;
-    this.sync.post({
-      type: 'items',
-      items: [
+    if (this.views.size) {
+      const list = [
         ...this.items
           .filter((i) => this.itemFilesForSync.has(i.id))
           .map((i) => ({
@@ -2761,11 +2786,15 @@ export class Studio implements StudioApi {
             visible: this.runtime.isItemVisible(i.id),
             files: this.itemFilesForSync.get(i.id)!,
           })),
-        // Collaborators' avatars only to views people see (a view's hello sends them again):
-        // each message copies their files, and a shared model is up to 160 MB.
         ...((this.hasViews && this.extraViewItems?.()) || []),
-      ],
-    });
+      ];
+      const sent = this.itemsSentToViews;
+      this.sync.post({
+        type: 'items',
+        items: list.map((i) => (sent.has(i.id) ? { ...i, files: [] } : i)),
+      });
+      this.itemsSentToViews = new Set(list.map((i) => i.id));
+    } else this.itemsSentToViews.clear();
     this.sync.post({ type: 'itemLayout', layout: this.runtime.exportItemLayout() });
   }
 

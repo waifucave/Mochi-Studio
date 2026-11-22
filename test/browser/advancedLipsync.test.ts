@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BridgeServer } from '../../bridge/src/server.ts';
 import { BridgeStore } from '../../bridge/src/store.ts';
 import { PluginClient } from '../support/pluginClient';
-import { syntheticModelFiles } from '../support/syntheticModel';
+import { MOTION_SYNC_SHAPES, syntheticModelFiles } from '../support/syntheticModel';
 import { openSection, startHarness, type Harness } from './harness';
 
 /**
@@ -471,18 +471,42 @@ describe('the advanced lipsync', () => {
     await play('O');
     await untilVowel('O');
     await out.bringToFront();
+    // Both values of one moment: the O is open 0.7 and rounded.
     await expect
       .poll(
         () =>
-          out.evaluate(() => (window as any).mochiOutput.runtime.parameterValue('ParamMouthOpenY')),
+          out.evaluate(() => {
+            const r = (window as any).mochiOutput.runtime;
+            const open = r.parameterValue('ParamMouthOpenY') as number;
+            const form = r.parameterValue('ParamMouthForm') as number;
+            return Math.abs(open - 0.7) < 0.05 && form < -0.6 ? 'O' : `open ${open}, form ${form}`;
+          }),
         { timeout: 10_000 },
       )
-      .toBeCloseTo(0.7, 1);
-    expect(
-      await out.evaluate(() =>
-        (window as any).mochiOutput.runtime.parameterValue('ParamMouthForm'),
-      ),
-    ).toBeLessThan(-0.6);
+      .toBe('O');
+    // Frame by frame, the view shows one of the setting's shapes and never a mix of two: the
+    // setting's blend ratio is 0, and both values come from one analysis tick in one message.
+    // (Two reads at two moments can see O, then a moment of silence: the reads above are one.)
+    const frames = await out.evaluate(
+      () =>
+        new Promise<Array<[number, number]>>((done) => {
+          const r = (window as any).mochiOutput.runtime;
+          const seen: Array<[number, number]> = [];
+          const t0 = performance.now();
+          const loop = () => {
+            seen.push([r.parameterValue('ParamMouthOpenY'), r.parameterValue('ParamMouthForm')]);
+            if (performance.now() - t0 < 1000) requestAnimationFrame(loop);
+            else done(seen);
+          };
+          requestAnimationFrame(loop);
+        }),
+    );
+    const shapes = Object.values(MOTION_SYNC_SHAPES);
+    const mixed = frames.filter(
+      ([o, f]) => !shapes.some(([so, sf]) => Math.abs(o - so) < 0.01 && Math.abs(f - sf) < 0.01),
+    );
+    expect(frames.length).toBeGreaterThan(5);
+    expect(mixed, `frames: ${JSON.stringify(frames)}`).toEqual([]);
     await page.bringToFront();
     // Back to the vowel inputs: motion sync stops, Mochi Studio's analysis runs again.
     await page.locator('label', { hasText: 'Mouth shapes' }).locator('select').selectOption('');

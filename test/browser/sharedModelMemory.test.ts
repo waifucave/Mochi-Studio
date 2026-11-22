@@ -1,5 +1,5 @@
 import { randomFillSync } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync } from 'fflate';
@@ -7,6 +7,7 @@ import { chromium, type Browser, type BrowserServer, type Page } from 'playwrigh
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startSignalingServer } from '../../collab/server';
 import { syntheticModelFiles } from '../support/syntheticModel';
+import { processMemory } from '../support/processMemory';
 import { startHarness, type Harness } from './harness';
 
 /**
@@ -61,52 +62,6 @@ async function app(browser: Browser, name: string, zip: string): Promise<Page> {
     { server: server.wsUrl, name },
   );
   return p;
-}
-
-/** The processes under a pid (Linux). */
-function descendants(root: number): number[] {
-  const parent = new Map<number, number>();
-  for (const d of readdirSync('/proc')) {
-    if (!/^\d+$/.test(d)) continue;
-    try {
-      const stat = readFileSync(`/proc/${d}/stat`, 'utf8');
-      parent.set(Number(d), Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]));
-    } catch {
-      // gone
-    }
-  }
-  const out: number[] = [];
-  const walk = (p: number) => {
-    for (const [c, pp] of parent) if (pp === p) (out.push(c), walk(c));
-  };
-  walk(root);
-  return out;
-}
-
-/** The receiver's renderer: the child of its browser with `--type=renderer` and the most memory. */
-function processMemory(browserPid: number): {
-  rendererRss: number;
-  rendererPeak: number;
-  allRss: number;
-} {
-  let rendererRss = 0;
-  let rendererPeak = 0;
-  let allRss = 0;
-  for (const pid of [browserPid, ...descendants(browserPid)]) {
-    try {
-      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
-      const kb = (k: string) => Number(new RegExp(`${k}:\\s+(\\d+)`).exec(status)?.[1] ?? 0) * 1024;
-      allRss += kb('VmRSS');
-      const cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-      if (cmd.includes('--type=renderer') && kb('VmHWM') > rendererPeak) {
-        rendererPeak = kb('VmHWM');
-        rendererRss = kb('VmRSS');
-      }
-    } catch {
-      // gone
-    }
-  }
-  return { rendererRss, rendererPeak, allRss };
 }
 
 /** Samples the receiver while `work` runs: its page's JS heap and backing stores, and its processes. */

@@ -80,8 +80,6 @@ export function checkSharedAnnouncement(
   return undefined;
 }
 
-const millions = (n: number) => `${Math.round(n / 1e6).toLocaleString('en')} million`;
-
 /**
  * Checks a shared model's textures by their headers, before anything
  * decodes them: each at most 8192 pixels a side, all together at most
@@ -115,7 +113,7 @@ export async function checkSharedTextures(
   if (pixels > limits.maxPixels)
     return {
       problem: 'too-large',
-      detail: `Its textures come to ${millions(pixels)} pixels; the most in all is ${millions(limits.maxPixels)}.`,
+      detail: `Its textures come to ${pixels.toLocaleString('en')} pixels; the most in all is ${limits.maxPixels.toLocaleString('en')}.`,
     };
   return undefined;
 }

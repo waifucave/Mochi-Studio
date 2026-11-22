@@ -85,7 +85,7 @@ export function zeros(size: number) {
   let b = bombs.get(size);
   if (!b) {
     const data = new Uint8Array(size);
-    b = { bytes: deflateSync(data, { level: 9 }), size, crc: crc32(data) };
+    b = { bytes: deflateSync(data, { level: 1 }), size, crc: crc32(data) };
     bombs.set(size, b);
   }
   return b;

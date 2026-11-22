@@ -15,8 +15,14 @@ export type SyncMessage =
   | { type: 'hello'; viewId: string; avatar?: boolean }
   /** Output -> control: the view is closing. */
   | { type: 'bye'; viewId: string }
-  /** Control -> output: the model's files. Sent once per load and on hello. */
+  /** Control -> output: the model's files. Sent on hello, and on a load while views are known. */
   | { type: 'model'; key: string; label: string; files: Array<[string, Uint8Array]> }
+  /**
+   * Control -> output: a model is loaded, but no view is known to this window
+   * (none, or only ones open before it loaded). A view without that model
+   * answers with hello and gets it; one that has it says it is ready.
+   */
+  | { type: 'modelAvailable'; key: string }
   /**
    * Control -> output over the bridge: the model's file list only. The view
    * reads each file from the bridge's /files when it needs it, so large
@@ -179,6 +185,7 @@ const TYPES = new Set([
   'hello',
   'bye',
   'model',
+  'modelAvailable',
   'unload',
   'stage',
   'params',

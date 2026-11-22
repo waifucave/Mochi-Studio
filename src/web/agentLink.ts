@@ -423,6 +423,8 @@ export class AgentLink {
         const m = e.data;
         this.workerPending.delete(m.rel);
         if (!m.ok) this.uploaded.delete(m.rel);
+        // The bridge has it: its copy of the bytes goes (a view's request makes another).
+        else this.workerFiles.delete(m.rel);
         this.uploadStats.sentBytes += m.sent;
         this.uploadStats.skippedBytes += m.skipped;
         this.uploadStats.ms = Math.round(performance.now() - this.uploadStart);

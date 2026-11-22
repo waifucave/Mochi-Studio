@@ -112,21 +112,10 @@ export class CollabStage implements CollabApi {
         let video: ModelAnnouncement['video'];
         if (mode === 'video') {
           const size = avatarFrameSize(this.runtime.modelAspect() ?? 1, this.place().height);
-          if (
-            !this.sender ||
-            this.sender.size.width !== size.width ||
-            this.sender.size.height !== size.height
-          ) {
-            this.sender?.stop();
-            this.sender = new AvatarVideoSender(size, new URL('output.html', location.href).href);
-          }
-          this.session?.setVideoTrack(this.sender.track);
+          this.videoSize = size;
           video = { ...size, fit: AVATAR_FIT };
-        } else {
-          this.sender?.stop();
-          this.sender = undefined;
-          this.session?.setVideoTrack(undefined);
-        }
+        } else this.videoSize = undefined;
+        this.syncVideoSender();
         return {
           t: 'model',
           serial,
@@ -146,7 +135,35 @@ export class CollabStage implements CollabApi {
       },
       params: () => studio.lastParams,
       place: () => this.place(),
+      peers: (count) => {
+        this.peerCount = count;
+        this.syncVideoSender();
+      },
     };
+  }
+
+  /** The video avatar's size while this app shares as video, and the connections it has. */
+  private videoSize: { width: number; height: number } | undefined;
+  private peerCount = 0;
+
+  /**
+   * The video avatar's page runs only while this app shares as video and has someone to send
+   * it to: it starts with the first connection (while it is being made, so that its first
+   * frames come about when the connection opens) and stops when the last one goes.
+   */
+  private syncVideoSender(): void {
+    const size = this.peerCount > 0 ? this.videoSize : undefined;
+    if (!size) {
+      if (!this.sender) return;
+      this.sender.stop();
+      this.sender = undefined;
+      this.session?.setVideoTrack(undefined);
+      return;
+    }
+    if (this.sender?.size.width === size.width && this.sender.size.height === size.height) return;
+    this.sender?.stop();
+    this.sender = new AvatarVideoSender(size, new URL('output.html', location.href).href);
+    this.session?.setVideoTrack(this.sender.track);
   }
 
   private place(): StagePlace {
@@ -386,6 +403,8 @@ export class CollabStage implements CollabApi {
     this.localOrder = undefined;
     this.sender?.stop();
     this.sender = undefined;
+    this.peerCount = 0;
+    this.videoSize = undefined;
     this.studio.extraViewItems = undefined;
     this.studio.refreshViewItems();
   }

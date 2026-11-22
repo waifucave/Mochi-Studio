@@ -200,10 +200,12 @@ for frame-by-frame effects.
 - **Kept** in memory only, never on disk, and deleted when the sender
   leaves or is removed, or the session ends.
 - **Limits on a model:** 160 MB in all, 32 MB a file and 500 files; its
-  textures at most 8192 pixels a side and 64 million pixels together (one
-  texture of 8192 × 8192, or four of 4096 × 4096). The largest models we
+  textures at most 8192 pixels a side and 67,108,864 pixels together
+  (8192 × 8192: one texture of that size, or four of 4096 × 4096). The largest models we
   know of are about half of each. A model over any of these always goes
-  as video, and the sender's Collab tab says which limit.
+  as video, and the sender's Collab tab says which limit. (The figures are
+  set in `src/core/archiveLimits.ts`: `SHARED_MODEL_LIMITS`,
+  `SHARED_TEXTURE_LIMITS` and `SHARED_HELD_BYTES`.)
 - **Limits on an app:** one app holds at most 600 MB of the others' shared
   models at once. When a newer one doesn't fit, it waits: its sender's
   list says "Their app has no room for your model now", and the model goes

@@ -124,8 +124,16 @@ function then(fn: () => void | Promise<void>): void {
 
 function handle(m: SyncMessage): void {
   switch (m.type) {
+    case 'modelAvailable':
+      // A control window that doesn't know this view yet: ask for everything, or (with this
+      // model already) say it is here.
+      if (m.key === loadedKey) status('ready', 0, 0, 0);
+      else transport.post({ type: 'hello', viewId, ...(avatarMode ? { avatar: true } : {}) });
+      break;
     case 'model':
-      if (m.key === loadedKey) return;
+      // Says it is here, also to a control window that (re)loaded after it said hello: items
+      // go only to views the control window knows of.
+      if (m.key === loadedKey) return status('ready', 0, 0, 0);
       loadedKey = m.key;
       modelReady = false;
       // The old model's values go now; those that come while this one loads are its own
@@ -138,6 +146,7 @@ function handle(m: SyncMessage): void {
         await runtime.load(model);
         modelReady = true;
         document.body.dataset.model = m.key;
+        status('ready', 0, 0, 0);
       });
       break;
     case 'modelRemote':
