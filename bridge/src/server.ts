@@ -1031,7 +1031,11 @@ export class BridgeServer {
 
   /** Drops uploaded files of models and items the page no longer shows. */
   private evict(message: unknown): void {
-    const m = message as { type?: string; key?: string; items?: Array<{ id?: string }> };
+    const m = message as {
+      type?: string;
+      key?: string;
+      items?: Array<{ id?: string; version?: number }>;
+    };
     const drop = (keep: (scope: string, owner: string) => boolean): void => {
       for (const [k, buf] of this.cache) {
         const [scope, owner] = k.split('/', 2) as [string, string];
@@ -1047,7 +1051,9 @@ export class BridgeServer {
         if (k.startsWith('model/') && k !== `model/${encodeURIComponent(m.key ?? '')}`)
           this.diskSources.delete(k);
     } else if (m?.type === 'itemsRemote') {
-      const ids = new Set((m.items ?? []).map((i) => i.id));
+      // An item's files are served under its id, with the version of its files once they
+      // changed (`itemFilesOwner`): those of an earlier version are dropped too.
+      const ids = new Set((m.items ?? []).map((i) => (i.version ? `${i.id}@${i.version}` : i.id)));
       drop((scope, owner) => scope !== 'item' || ids.has(owner));
     } else if (m?.type === 'unload') drop((scope) => scope !== 'model');
   }

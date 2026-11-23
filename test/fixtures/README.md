@@ -5,8 +5,9 @@ material.
 
 - **`tone.ogg`:** a one-second 440 Hz sine tone, mono, 22,050 Hz, Ogg
   Vorbis (4.7 KB). It is a model's motion sound in
-  `test/browser/textureCaps.test.ts`. Made with ffmpeg's built-in tone
-  source:
+  `test/browser/textureCaps.test.ts` (the app plays it) and in
+  `test/browser/collab.test.ts` (a shared model's, which plays none of its
+  sounds). Made with ffmpeg's built-in tone source:
 
   ```sh
   ffmpeg -f lavfi -i "sine=frequency=440:duration=1:sample_rate=22050" \

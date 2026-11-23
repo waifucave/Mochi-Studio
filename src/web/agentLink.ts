@@ -23,7 +23,7 @@ import {
 } from '../core/bridgeProtocol';
 import { CommandError, type Scope } from '../core/commands/registry';
 import { Emitter } from '../core/events';
-import type { SyncMessage, SyncTransport } from '../core/sync';
+import { itemFilesOwner, type SyncMessage, type SyncTransport } from '../core/sync';
 import type { BridgeToHostPlugin, HostToBridgePlugin } from '../core/plugins/protocol';
 import type { BridgeToHostPhone, HostToBridgePhone } from '../core/phoneProtocol';
 import type { Studio } from './studio';
@@ -137,6 +137,7 @@ function toRemote(m: SyncMessage): SyncMessage {
         visible: i.visible,
         paths: i.files.map(([p]) => p),
         sizes: i.files.map(([, d]) => d.length),
+        ...(i.version ? { version: i.version } : {}),
       })),
     };
   return m;
@@ -185,7 +186,11 @@ export class AgentLink {
       this.send({ type: 'sync', message: encodeSync(toRemote(m)) });
       // Upload the files once, so views read them from the bridge's memory.
       if (m.type === 'model') this.upload('model', m.key, m.files);
-      else if (m.type === 'items') for (const i of m.items) this.upload('item', i.id, i.files);
+      else if (m.type === 'items') {
+        // Files of items gone, and of files an item no longer has, are not kept for upload.
+        this.forgetItemFiles(new Set(m.items.map((i) => itemFilesOwner(i.id, i.version))));
+        for (const i of m.items) this.upload('item', itemFilesOwner(i.id, i.version), i.files);
+      }
     };
   }
 
@@ -382,6 +387,18 @@ export class AgentLink {
       this.uploads.push({ rel, run });
     }
     this.pump();
+  }
+
+  /** Forgets the items' files kept for upload but those of the names given. */
+  private forgetItemFiles(keep: Set<string>): void {
+    const stale = (rel: string): boolean => {
+      const [scope, owner] = rel.split('/', 2) as [string, string];
+      return scope === 'item' && !keep.has(decodeURIComponent(owner));
+    };
+    for (const rel of [...this.uploaded]) if (stale(rel)) this.uploaded.delete(rel);
+    for (const rel of [...this.uploadable.keys()]) if (stale(rel)) this.uploadable.delete(rel);
+    for (const rel of [...this.workerFiles.keys()]) if (stale(rel)) this.workerFiles.delete(rel);
+    this.uploads = this.uploads.filter((u) => !stale(u.rel));
   }
 
   /** Files still to upload for output views. */

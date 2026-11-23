@@ -21,7 +21,12 @@ import {
 } from '../core/settings';
 import type { Background } from '../core/background';
 import type { CollabApi } from '../core/collab/api';
-import { ParamDiffer, type SyncMessage, type SyncTransport } from '../core/sync';
+import {
+  ParamDiffer,
+  parseItemFilesOwner,
+  type SyncMessage,
+  type SyncTransport,
+} from '../core/sync';
 import type { InputValues, TrackingFrame } from '../core/tracking';
 import { canvasPng, pngContext } from './canvasPng';
 import { FaceTracker, type TrackingMode } from './faceTracker';
@@ -566,8 +571,18 @@ export class Studio implements StudioApi {
         ? owner === this.model?.key
           ? this.modelFilesForSync
           : undefined
-        : this.itemFilesForSync.get(owner);
+        : this.itemViewFiles(owner);
     return list?.find(([p]) => p === path)?.[1];
+  }
+
+  /** An item's files by the name views fetch them under (`itemFilesOwner`). */
+  private itemViewFiles(owner: string): Array<[string, Uint8Array]> | undefined {
+    const [id, version] = parseItemFilesOwner(owner);
+    const known = this.viewFileVersions.get(id);
+    if (known && known.version !== version) return undefined;
+    return (
+      (known?.files as Array<[string, Uint8Array]> | undefined) ?? this.itemFilesForSync.get(id)
+    );
   }
 
   // --- settings ------------------------------------------------------------
@@ -1709,18 +1724,20 @@ export class Studio implements StudioApi {
     return this.itemFilesForSync.get(id) ?? (await this.itemFiles.get(id).catch(() => undefined));
   }
 
-  /** Replaces an item's files, keeping its place, pin and visibility. */
+  /**
+   * Replaces an item's files. The runtime keeps it drawn as it was until the
+   * new files have loaded, and keeps how it is drawn.
+   */
   async replaceItemFiles(id: string, entries: Array<[string, Uint8Array]>): Promise<void> {
     const entry = this.items.find((i) => i.id === id);
     if (!entry) return;
-    const pinned = this.runtime.items().find((i) => i.id === id);
     await this.runtime.addItem(id, new MemoryFileSet(entry.label, entries), {
       visible: entry.visible,
-      ...(pinned ? { placement: pinned.placement } : {}),
     });
-    if (pinned?.pinned) this.runtime.pinItem(id, true);
-    if (!entry.temporary) await this.itemFiles.put(id, entries);
+    // Removed while its new files loaded: they are not kept.
+    if (!this.items.some((i) => i.id === id)) return;
     this.itemFilesForSync.set(id, entries);
+    if (!entry.temporary) await this.itemFiles.put(id, entries);
     this.saveItems();
     this.broadcastItems();
   }
@@ -2774,8 +2791,21 @@ export class Studio implements StudioApi {
     if (this.hasViews) this.sync?.post(m);
   }
 
-  /** Items whose files output views have been sent since the last full send. */
-  private itemsSentToViews = new Set<string>();
+  /** Items whose files output views have been sent since the last full send, and which files. */
+  private itemsSentToViews = new Map<string, number>();
+  /**
+   * Each item's files as views know them: a version that counts up when they
+   * change (a plugin's brightness redraws a picture; a collaborator shares
+   * another model), so views load the new ones.
+   */
+  private viewFileVersions = new Map<string, { files: unknown; version: number }>();
+  private viewFileVersion(id: string, files: Array<[string, Uint8Array]>): number {
+    const known = this.viewFileVersions.get(id);
+    if (known?.files === files) return known.version;
+    const version = known ? known.version + 1 : 0;
+    this.viewFileVersions.set(id, { files, version });
+    return version;
+  }
 
   /**
    * The items, to output views. Their files go only while views are open (a
@@ -2797,13 +2827,16 @@ export class Studio implements StudioApi {
             files: this.itemFilesForSync.get(i.id)!,
           })),
         ...((this.hasViews && this.extraViewItems?.()) || []),
-      ];
+      ].map((i) => ({ ...i, version: this.viewFileVersion(i.id, i.files) }));
       const sent = this.itemsSentToViews;
       this.sync.post({
         type: 'items',
-        items: list.map((i) => (sent.has(i.id) ? { ...i, files: [] } : i)),
+        // Files only to views that lack these (a new version of an item's files, too).
+        items: list.map((i) => (sent.get(i.id) === i.version ? { ...i, files: [] } : i)),
       });
-      this.itemsSentToViews = new Set(list.map((i) => i.id));
+      this.itemsSentToViews = new Map(list.map((i) => [i.id, i.version]));
+      for (const id of this.viewFileVersions.keys())
+        if (!this.itemsSentToViews.has(id)) this.viewFileVersions.delete(id);
     } else this.itemsSentToViews.clear();
     this.sync.post({ type: 'itemLayout', layout: this.runtime.exportItemLayout() });
   }

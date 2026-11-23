@@ -1,7 +1,7 @@
 import { backgroundCss } from '../core/background';
 import { FrameLimiter } from '../core/frameCap';
 import { MemoryFileSet, RootedFileSet, openModel, type ModelFileSet } from '../core/modelFiles';
-import { SYNC_CHANNEL, channelTransport, type SyncMessage } from '../core/sync';
+import { SYNC_CHANNEL, channelTransport, itemFilesOwner, type SyncMessage } from '../core/sync';
 import { COLLAB_ITEM_PREFIX } from '../core/collab/stage';
 import { MochiRuntime } from './mochiRuntime';
 import { prefetchedFiles, viewBridgeTransport } from './viewBridge';
@@ -107,7 +107,8 @@ function remoteFiles(
 let loadedKey: string | undefined;
 let loading: Promise<void> = Promise.resolve();
 let modelReady = false;
-const itemIds = new Set<string>();
+/** The items this view shows, and the version of their files. */
+const itemIds = new Map<string, number>();
 const params: Record<string, number> = {};
 /** Parameter messages from the control window (for tests: they keep their rate while it is hidden). */
 let paramsReceived = 0;
@@ -140,7 +141,7 @@ function handle(m: SyncMessage): void {
       // (the control window sends them once, right after the model), so they stay.
       clearParams();
       then(async () => {
-        for (const id of itemIds) runtime.removeItem(id);
+        for (const id of itemIds.keys()) runtime.removeItem(id);
         itemIds.clear();
         const model = await openModel(new MemoryFileSet(m.label, m.files));
         await runtime.load(model);
@@ -155,7 +156,7 @@ function handle(m: SyncMessage): void {
       modelReady = false;
       clearParams();
       then(async () => {
-        for (const id of itemIds) runtime.removeItem(id);
+        for (const id of itemIds.keys()) runtime.removeItem(id);
         itemIds.clear();
         const t0 = performance.now();
         const total = m.sizes?.reduce((a, b) => a + b, 0) ?? 0;
@@ -181,17 +182,20 @@ function handle(m: SyncMessage): void {
       if (!bridge) return;
       then(async () => {
         const wanted = new Set(m.items.map((i) => i.id));
-        for (const id of itemIds)
+        for (const id of itemIds.keys())
           if (!wanted.has(id)) {
             runtime.removeItem(id);
             itemIds.delete(id);
           }
         for (const i of m.items) {
-          if (itemIds.has(i.id) || (avatarMode && isCollab(i.id))) continue;
-          await runtime.addItem(i.id, remoteFiles('item', i.id, i.label, i.paths, i.sizes).files, {
+          // An item this view has, with these files: nothing to load. New files replace its
+          // old ones, which stay drawn until the new ones have loaded.
+          if (itemIds.get(i.id) === (i.version ?? 0) || (avatarMode && isCollab(i.id))) continue;
+          const owner = itemFilesOwner(i.id, i.version);
+          await runtime.addItem(i.id, remoteFiles('item', owner, i.label, i.paths, i.sizes).files, {
             visible: i.visible,
           });
-          itemIds.add(i.id);
+          itemIds.set(i.id, i.version ?? 0);
         }
         document.body.dataset.items = String(itemIds.size);
       });
@@ -200,7 +204,7 @@ function handle(m: SyncMessage): void {
       loadedKey = undefined;
       modelReady = false;
       then(() => {
-        for (const id of itemIds) runtime.removeItem(id);
+        for (const id of itemIds.keys()) runtime.removeItem(id);
         itemIds.clear();
         runtime.unload();
         for (const k of Object.keys(params)) delete params[k];
@@ -235,17 +239,18 @@ function handle(m: SyncMessage): void {
     case 'items':
       then(async () => {
         const wanted = new Set(m.items.map((i) => i.id));
-        for (const id of itemIds)
+        for (const id of itemIds.keys())
           if (!wanted.has(id)) {
             runtime.removeItem(id);
             itemIds.delete(id);
           }
         for (const i of m.items) {
-          if (itemIds.has(i.id) || (avatarMode && isCollab(i.id))) continue;
+          if (itemIds.get(i.id) === (i.version ?? 0) || (avatarMode && isCollab(i.id))) continue;
+          if (!i.files.length) continue;
           await runtime.addItem(i.id, new MemoryFileSet(i.label, i.files), {
             visible: i.visible,
           });
-          itemIds.add(i.id);
+          itemIds.set(i.id, i.version ?? 0);
         }
         document.body.dataset.items = String(itemIds.size);
       });
@@ -331,7 +336,7 @@ function handle(m: SyncMessage): void {
         runtime.setModelTints(m.model);
         // Items that arrive later get theirs when they are added.
         const tinted = new Map(m.items);
-        for (const id of itemIds) if (!tinted.has(id)) runtime.setItemTint(id, undefined);
+        for (const id of itemIds.keys()) if (!tinted.has(id)) runtime.setItemTint(id, undefined);
         for (const [id, rgba] of tinted) runtime.setItemTint(id, rgba);
       });
       break;

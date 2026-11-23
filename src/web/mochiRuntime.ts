@@ -150,6 +150,12 @@ export class MochiRuntime implements AvatarRuntime {
   /** A held motion that reached its last frame (Mochi2D keeps showing it). */
   private held: { ref: MotionRef } | undefined;
   private itemMap = new Map<string, MochiItem>();
+  /** Mochi Studio's id of each item Mochi2D draws. */
+  private itemIds = new WeakMap<MochiItem, string>();
+  /** For the Mochi2D ids of items whose files were replaced. */
+  private itemSerial = 0;
+  /** How many times each id was removed: a load that a removal overtakes shows nothing. */
+  private itemRemovals = new Map<string, number>();
   private transform: SceneTransform = { ...DEFAULT_TRANSFORM };
   /** CSS pixels per model unit at zoom 1, once the view has measured it. */
   private pixelsPerUnit: number | undefined;
@@ -893,8 +899,9 @@ export class MochiRuntime implements AvatarRuntime {
     state: { visible: boolean; placement?: ItemPlacement },
   ): Promise<void> {
     const before = this.itemLoads.get(id);
+    const removals = this.itemRemovals.get(id) ?? 0;
     const run = (before ? before.catch(() => undefined) : Promise.resolve()).then(() =>
-      this.loadItem(id, files, state),
+      this.loadItem(id, files, state, removals),
     );
     this.itemLoads.set(id, run);
     run
@@ -905,25 +912,32 @@ export class MochiRuntime implements AvatarRuntime {
     return run;
   }
 
+  /**
+   * Loads an item, or replaces an item's files. A replaced item stays drawn
+   * as it was until its new files have loaded; then, in one step (no frame
+   * between), the new one takes its place: where and how it is drawn (its
+   * place, side, layer, split, flip, pin, opacity), its place in the
+   * drawing order, its tint and its frame. `state.placement` is for a first
+   * load; a replaced item keeps its own.
+   */
   private async loadItem(
     id: string,
     files: ModelFileSet,
     state: { visible: boolean; placement?: ItemPlacement },
+    removals: number,
   ): Promise<void> {
-    // Replacing an item's files keeps its tint and its opacity (a plugin's brightness
-    // redraws a still picture: its opacity stays).
+    if ((this.itemRemovals.get(id) ?? 0) !== removals) return;
     const previous = this.itemMap.get(id);
-    const opacity = previous?.opacity;
-    previous?.dispose();
-    this.itemMap.delete(id);
-    // Mochi2D knows the item by Mochi Studio's id, so copies keep their own places.
+    // Mochi2D knows a first load by Mochi Studio's id, so copies keep their own places.
+    // Its ids are unique in a view, so the new files of a shown item load under another.
+    const mochiId = previous ? `${id}~${++this.itemSerial}` : id;
     const w = watched(toSource(files));
     let item: MochiItem;
     try {
       item = await this.v.addItem(w.source, {
-        id,
+        id: mochiId,
         textures: itemTextureLimits(id),
-        ...(state.placement ? { placement: state.placement } : {}),
+        ...(!previous && state.placement ? { placement: state.placement } : {}),
       });
     } catch (e) {
       throw plainRefusal(
@@ -934,11 +948,32 @@ export class MochiRuntime implements AvatarRuntime {
     } finally {
       w.done();
     }
+    // Removed while it loaded: it stays removed.
+    if ((this.itemRemovals.get(id) ?? 0) !== removals) {
+      item.dispose();
+      return;
+    }
+    const shown = this.itemMap.get(id);
+    if (shown) {
+      if (!item.applyLayout(shown.exportLayout()) && shown.pin) item.pinToModel();
+      // Its place in the drawing order: the items above the one it replaces go above it again.
+      const order = this.v.items;
+      const above = order.slice(order.indexOf(shown) + 1).filter((i) => i !== item);
+      shown.dispose();
+      this.itemIds.delete(shown);
+      for (const i of above) i.raise();
+    }
     item.visible = state.visible;
-    if (opacity !== undefined) item.opacity = opacity;
     this.itemMap.set(id, item);
+    this.itemIds.set(item, id);
     this.applyItemTint(id);
     this.applyItemFrame(id);
+  }
+
+  /** Mochi Studio's id of an item Mochi2D draws (its own id, but while it replaces files). */
+  private appId(item: MochiItem | undefined): string | undefined {
+    const id = item && this.itemIds.get(item);
+    return id !== undefined && this.itemMap.get(id) === item ? id : undefined;
   }
 
   /** Replaces an item's (first) texture in place (Mochi2D 0.14.0), for web items. */
@@ -958,6 +993,8 @@ export class MochiRuntime implements AvatarRuntime {
   removeItem(id: string): void {
     this.itemMap.get(id)?.dispose();
     this.itemMap.delete(id);
+    if (this.itemLoads.has(id)) this.itemRemovals.set(id, (this.itemRemovals.get(id) ?? 0) + 1);
+    else this.itemRemovals.delete(id);
     this.itemTints.delete(id);
     this.itemFrames.delete(id);
   }
@@ -1028,7 +1065,9 @@ export class MochiRuntime implements AvatarRuntime {
    * place): Mochi2D's `view.items`, which `raise()` reorders (0.12.0).
    */
   itemOrder(): string[] {
-    return (this.view?.items ?? []).map((i) => i.id).filter((id) => this.itemMap.has(id));
+    return (this.view?.items ?? [])
+      .map((i) => this.appId(i))
+      .filter((id): id is string => id !== undefined);
   }
   /**
    * Where an item is drawn among the main model's art meshes, and its split
@@ -1138,8 +1177,7 @@ export class MochiRuntime implements AvatarRuntime {
     return out;
   }
   itemAt(clientX: number, clientY: number): string | undefined {
-    const id = this.view?.itemAt(clientX, clientY)?.id;
-    return id !== undefined && this.itemMap.has(id) ? id : undefined;
+    return this.appId(this.view?.itemAt(clientX, clientY) ?? undefined);
   }
 
   /**
@@ -1148,14 +1186,17 @@ export class MochiRuntime implements AvatarRuntime {
    */
   exportItemLayout(): unknown {
     const layout = this.view?.exportItemLayout();
-    // Collaborators' avatars (ids "collab:…") are never part of the saved layout.
-    if (layout && Array.isArray((layout as { items?: unknown }).items))
+    // Entries name the items by Mochi Studio's ids (Mochi2D's differ for an item whose
+    // files were replaced). Collaborators' avatars (ids "collab:…") are never saved in it.
+    if (layout && Array.isArray((layout as { items?: unknown }).items)) {
+      const ids = new Map([...this.itemMap].map(([id, item]) => [item.id, id]));
       return {
         ...layout,
-        items: (layout as { items: { id?: string }[] }).items.filter(
-          (e) => !e.id?.startsWith(COLLAB_ITEM_PREFIX),
-        ),
+        items: (layout as { items: { id?: string }[] }).items
+          .map((e) => (e.id !== undefined && ids.has(e.id) ? { ...e, id: ids.get(e.id) } : e))
+          .filter((e) => !e.id?.startsWith(COLLAB_ITEM_PREFIX)),
       };
+    }
     return layout;
   }
 
@@ -1243,7 +1284,19 @@ export class MochiRuntime implements AvatarRuntime {
     if (!this.view || !layout || typeof layout !== 'object') return;
     try {
       const { mochiStudioOrder: order, ...rest } = layout as { mochiStudioOrder?: unknown };
-      this.view.applyItemLayout(layoutWithIds(rest as ItemLayout));
+      const withIds = layoutWithIds(rest as ItemLayout);
+      // To Mochi2D's ids of the items (another for an item whose files were replaced).
+      this.view.applyItemLayout(
+        Array.isArray(withIds.items)
+          ? {
+              ...withIds,
+              items: withIds.items.map((e) => {
+                const item = e.id !== undefined ? this.itemMap.get(e.id) : undefined;
+                return item ? { ...e, id: item.id } : e;
+              }),
+            }
+          : withIds,
+      );
       // Layouts saved before Mochi2D 0.12.0 listed items as added, with the order beside them.
       if (Array.isArray(order))
         this.stackItems(order.filter((id): id is string => typeof id === 'string'));

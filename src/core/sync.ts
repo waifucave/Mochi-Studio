@@ -62,6 +62,8 @@ export type SyncMessage =
         label: string;
         visible: boolean;
         files: Array<[string, Uint8Array]>;
+        /** Counts up when the item's files change: a view that has another loads these. */
+        version?: number;
       }>;
     }
   | { type: 'stopMotions' }
@@ -77,6 +79,7 @@ export type SyncMessage =
         visible: boolean;
         paths: string[];
         sizes?: number[];
+        version?: number;
       }>;
     }
   /** Control -> output: where the items are (Mochi2D's item layout). */
@@ -246,4 +249,19 @@ export class ParamDiffer {
   reset(): void {
     this.last.clear();
   }
+}
+
+/**
+ * The name an item's files are served to views under, over the bridge: its
+ * id, and the version of its files after they changed (so a view never gets
+ * the files it had before).
+ */
+export function itemFilesOwner(id: string, version: number | undefined): string {
+  return version ? `${id}@${version}` : id;
+}
+
+/** An item's id and the version of its files, from `itemFilesOwner`. */
+export function parseItemFilesOwner(owner: string): [string, number] {
+  const m = /^(.*)@(\d+)$/.exec(owner);
+  return m ? [m[1]!, Number(m[2])] : [owner, 0];
 }
