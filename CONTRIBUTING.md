@@ -22,6 +22,10 @@ npm run test:browser   # build, then the browser tests in headless Chromium
 
 - **Browser tests** need Chromium; set `CHROMIUM_PATH` to use an installed
   one.
+- **Test counts:** the suites run every `*.test.ts` file in `src/` and
+  `test/`, whether git tracks it or not. Before you quote a count, check
+  that `git status --short src test` lists no new test files, or the count
+  includes tests nobody else has.
 - **The desktop app:** `npm run desktop`; see [docs/desktop.md](docs/desktop.md)
   for packages and the native modules (Spout2 on Windows, the virtual camera
   on Linux).

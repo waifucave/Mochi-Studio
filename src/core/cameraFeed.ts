@@ -91,13 +91,17 @@ export class CameraFeed {
     this.under = o.under;
   }
 
-  /** Sets the device's format and starts the repeats. Throws when the device refuses the format. */
+  /**
+   * Sets the device's format and starts writing at the camera's rate: each tick writes the
+   * newest frame, new or the last one again, so call apps get a steady rate whatever the page's
+   * (a still page paints only when something changes; a page held to fewer frames a second
+   * while the app's window is slow). Throws when the device refuses the format.
+   */
   start(): void {
     this.device.setFormat(this.o.width, this.o.height, this.o.fps);
-    const interval = 1000 / this.o.fps;
     this.timer = this.timers.setInterval(() => {
-      if (this.have && this.timers.now() - this.lastWrite >= interval * 1.5) this.write();
-    }, interval);
+      if (this.have) this.write();
+    }, 1000 / this.o.fps);
   }
 
   /** A frame from the page: premultiplied, at the camera's size. */
@@ -122,9 +126,11 @@ export class CameraFeed {
       this.out,
       this.o.order ?? 'bgra',
     );
+    // The first frame goes out at once; the next ones at the camera's ticks.
+    const first = !this.have;
     this.have = true;
     this.converted++;
-    this.write();
+    if (first) this.write();
   }
 
   private write(): void {

@@ -54,6 +54,11 @@ export type RuntimeEvents = {
   itemMoved: { id: string };
   /** A problem the renderer found after the load: a motion sound that didn't play. */
   modelNotice: { text: string };
+  /**
+   * The graphics context was lost (the graphics driver or the app's graphics process
+   * restarted) or is back. Drawing pauses while it is lost; a model load waits for it.
+   */
+  graphicsContext: { lost: boolean };
 };
 
 /** Automatic behaviours the runtime can switch. */

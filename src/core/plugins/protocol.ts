@@ -24,7 +24,7 @@ export const BROADCAST_INTERVAL_MS = 2000;
 /** Mochi Studio's name wherever the protocol reports an app name. */
 export const APP_NAME = 'Mochi Studio';
 /** The version Mochi Studio reports (its own; how plugins use it is unknown). */
-export const APP_VERSION = '0.1.0';
+export { APP_VERSION } from '../version.ts';
 
 /** Error IDs. Only the numbers are protocol; the names are Mochi Studio's. */
 export const E = {

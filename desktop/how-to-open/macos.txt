@@ -3,9 +3,10 @@ Mochi Studio for macOS: how to open it
 
 This build is not signed or notarized. macOS (Gatekeeper) blocks apps from
 unidentified developers the first time; the warning does not mean anything
-harmful was found.
+harmful was found. It runs on Macs with Apple silicon (M1 and later) and
+macOS 13 or later, not on Intel Macs.
 
-1. Unzip "Mochi Studio-<version>-mac.zip" and move "Mochi Studio" to the
+1. Unzip Mochi-Studio-<version>-macos-arm64.zip and move "Mochi Studio" to the
    Applications folder.
 2. Right-click (or Control-click) the app and choose "Open", then "Open"
    again in the dialog. You only need to do this once.

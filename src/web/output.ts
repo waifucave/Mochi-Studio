@@ -18,6 +18,16 @@ const bg = document.getElementById('bg') as HTMLDivElement;
 const runtime = new MochiRuntime();
 runtime.attach(canvas);
 const limiter = new FrameLimiter(60);
+/**
+ * The stage's cap, and the desktop app's for a page it draws out of sight (Spout2, the virtual
+ * camera): lowered while the app's window answers slowly (src/core/frameGovernor.ts). The page
+ * draws at no more than the lower of the two.
+ */
+let stageCap = 60;
+let hostCap = 0;
+const applyCap = (): void => {
+  limiter.fps = hostCap > 0 && (stageCap <= 0 || hostCap < stageCap) ? hostCap : stageCap;
+};
 const viewId = crypto.randomUUID();
 // With ?bridge=…&view=… (the address from the Output tab, for OBS), the
 // view follows the control window through the bridge; otherwise over a
@@ -384,7 +394,8 @@ function handle(m: SyncMessage): void {
       document.body.dataset.background = forceTransparent ? 'transparent' : m.background.kind;
       if (!avatarMode) {
         runtime.setTransform(m.transform);
-        limiter.fps = m.fpsCap;
+        stageCap = m.fpsCap;
+        applyCap();
       }
       break;
     case 'params':
@@ -546,6 +557,14 @@ if (!avatarMode) requestAnimationFrame(tick);
   params,
   loadStats,
   step: (now: number) => tick(now),
+  /** The desktop app's cap for this page (0: none). */
+  setHostCap: (fps: number) => {
+    hostCap = Number.isFinite(fps) && fps > 0 ? fps : 0;
+    applyCap();
+  },
+  get fpsCap() {
+    return limiter.fps;
+  },
   get modelReady() {
     return modelReady;
   },

@@ -13,6 +13,7 @@ import {
   type SpoutOutputSetting,
   type SpoutOutputState,
 } from '../core/spout';
+import { rateText } from '../core/frameGovernor';
 import { h } from './dom';
 import type { Studio } from './studio';
 
@@ -22,7 +23,10 @@ const statusText = (st: SpoutOutputState | undefined, on: boolean): string => {
   if (st.error) return `Problem: ${st.error}`;
   if (!st.active) return `Starting at ${st.width} × ${st.height}…`;
   const path = st.path === 'gpu' ? 'on the graphics card' : 'through memory';
-  return `Sending ${st.width} × ${st.height}${st.mirror ? ', mirrored' : ''}, ${path}.`;
+  const held = st.held
+    ? ` At ${rateText(st.sentFps ?? st.fps ?? 0)} frames a second: this computer can't keep up at this size.`
+    : '';
+  return `Sending ${st.width} × ${st.height}${st.mirror ? ', mirrored' : ''}, ${path}.${held}`;
 };
 
 export function spoutSection(

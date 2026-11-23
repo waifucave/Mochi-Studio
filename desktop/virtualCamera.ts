@@ -24,7 +24,17 @@
  */
 import { BrowserWindow, screen } from 'electron';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { closeSync, existsSync, openSync, readdirSync, writeFileSync, writeSync } from 'node:fs';
+import { FrameGovernor, rateText, startFps } from '../src/core/frameGovernor.ts';
+import { setPageRate, type WindowProbe } from './windowProbe.ts';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { offscreenScale } from './cameraWindow.ts';
@@ -107,29 +117,44 @@ export interface V4l2Addon {
   ): void;
 }
 
-/** The loopback devices on this computer, with their labels. */
-export function loopbackDevices(addon: V4l2Addon): { path: string; label: string }[] {
+/**
+ * The loopback devices on this computer, with their labels; and the video devices that could
+ * not be opened, with their names from sysfs and why (a device the app may not open, for one).
+ */
+export function loopbackDevices(addon: V4l2Addon): {
+  found: { path: string; label: string }[];
+  unopened: { path: string; name: string; why: string }[];
+} {
   let names: string[];
   try {
     names = readdirSync('/sys/class/video4linux').filter((n) => /^video\d+$/.test(n));
   } catch {
-    return [];
+    return { found: [], unopened: [] };
   }
-  const out: { path: string; label: string }[] = [];
+  const found: { path: string; label: string }[] = [];
+  const unopened: { path: string; name: string; why: string }[] = [];
   for (const n of names.sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)))) {
     const path = `/dev/${n}`;
     let fd = -1;
     try {
       fd = addon.open(path);
       const cap = addon.queryCap(fd);
-      if (/loopback/i.test(cap.driver)) out.push({ path, label: cap.card });
-    } catch {
-      // Not ours to open (or gone): skip it.
+      if (/loopback/i.test(cap.driver)) found.push({ path, label: cap.card });
+    } catch (e) {
+      // Not ours to open (or gone): skipped, but kept with its name, so that a camera device
+      // the app may not open is not reported as missing.
+      let name = '';
+      try {
+        name = readFileSync(`/sys/class/video4linux/${n}/name`, 'utf8').trim();
+      } catch {
+        /* gone */
+      }
+      unopened.push({ path, name, why: (e as Error).message });
     } finally {
       if (fd >= 0) addon.close(fd);
     }
   }
-  return out;
+  return { found, unopened };
 }
 
 function linuxBackend(dir: string): CameraBackend {
@@ -139,8 +164,13 @@ function linuxBackend(dir: string): CameraBackend {
     convert: (src, w, h, under, out, order) =>
       addon.convert(src, w, h, under, out, order === 'rgba'),
     open() {
-      const all = loopbackDevices(addon);
+      const { found: all, unopened } = loopbackDevices(addon);
       const mine = all.find((d) => d.label === CAMERA_NAME);
+      const locked = unopened.find((d) => d.name === CAMERA_NAME);
+      if (!mine && locked)
+        return {
+          problem: `“${CAMERA_NAME}” is ${locked.path}, but Mochi Studio can't open it (${locked.why}). Add yourself to the device's group (usually video: sudo usermod -aG video $USER, then log in again).`,
+        };
       if (!mine)
         return {
           problem: all.length
@@ -429,6 +459,10 @@ export class VirtualCamera {
   private cfg: VirtualCameraConfig | undefined;
   private feed: CameraFeed | undefined;
   private win: BrowserWindow | undefined;
+  /** Keeps the app's window answering: the page's frame rate now (per feed). */
+  private gov: FrameGovernor | undefined;
+  private readonly listen = (ms: number) => this.gov?.sample(ms);
+  private readonly probe: WindowProbe | undefined;
   private repaint: ReturnType<typeof setInterval> | undefined;
   private url = '';
   private problem: string | undefined;
@@ -444,10 +478,12 @@ export class VirtualCamera {
   constructor(
     backend: CameraBackend,
     log: (m: string) => void,
+    probe?: WindowProbe,
     fake = process.env.MOCHI_VCAM_FAKE_DEVICE,
   ) {
     this.backend = backend;
     this.log = log;
+    this.probe = probe;
     this.fake = fake || undefined;
   }
 
@@ -488,6 +524,7 @@ export class VirtualCamera {
       height: c?.height ?? 0,
       fps: c?.fps ?? 0,
       frames: f?.frames ?? 0,
+      ...(f && this.gov?.held ? { heldFps: this.gov.sendingFps } : {}),
       ...((f?.error ?? this.startError) ? { error: f?.error ?? this.startError } : {}),
       ...(install ? { install } : {}),
     };
@@ -576,6 +613,21 @@ export class VirtualCamera {
     }
     this.startError = undefined;
     this.feed = feed;
+    this.gov = new FrameGovernor(
+      c.fps,
+      {
+        apply: (fps) =>
+          setImmediate(() => {
+            if (this.win && !this.win.isDestroyed()) setPageRate(this.win.webContents, fps);
+          }),
+        tell: (fps) =>
+          this.log(
+            `The virtual camera's picture changes ${rateText(fps)} times a second: this computer can't keep up at this size (${c.width} × ${c.height}).`,
+          ),
+      },
+      startFps(c.width, c.height),
+    );
+    this.probe?.add(this.listen);
     this.openWindow(c, feed);
   }
 
@@ -604,12 +656,15 @@ export class VirtualCamera {
     });
     this.win = win;
     win.webContents.setAudioMuted(true);
-    win.webContents.setFrameRate(c.fps);
+    const gov = this.gov;
+    win.webContents.setFrameRate(Math.max(1, gov?.fps ?? c.fps));
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e) => e.preventDefault());
     let lastPaint = Date.now();
     win.webContents.on('paint', (_e, _dirty, image) => {
       lastPaint = Date.now();
+      // Sooner than the rate allows: skipped (the feed repeats the last frame).
+      if (gov && !gov.allow()) return;
       const { width, height } = image.getSize();
       if (width && height) feed.frame(image.toBitmap(), width, height);
     });
@@ -619,7 +674,8 @@ export class VirtualCamera {
     const interval = 1000 / c.fps;
     if (this.repaint) clearInterval(this.repaint);
     this.repaint = setInterval(() => {
-      if (win.isDestroyed() || Date.now() - lastPaint < 2 * interval) return;
+      const drawn = 1000 / (gov?.fps ?? c.fps);
+      if (win.isDestroyed() || Date.now() - lastPaint < 2 * drawn) return;
       if (!win.webContents.isPainting()) win.webContents.startPainting();
       win.webContents.invalidate();
     }, interval);
@@ -627,9 +683,10 @@ export class VirtualCamera {
     win.webContents.on('console-message', (e) => {
       if (e.level !== 'debug') console.log(`[camera page] ${e.level}: ${e.message}`);
     });
-    win.webContents.on('did-finish-load', () =>
-      console.log(`[camera page] loaded: ${win.webContents.getURL()}`),
-    );
+    win.webContents.on('did-finish-load', () => {
+      console.log(`[camera page] loaded: ${win.webContents.getURL()}`);
+      if (gov) setPageRate(win.webContents, gov.fps);
+    });
     win.webContents.on('did-fail-load', (_e, code, text, url) =>
       console.log(`[camera page] the page didn't load (${code} ${text}): ${url}`),
     );
@@ -671,5 +728,7 @@ export class VirtualCamera {
     this.closeWindow();
     this.feed?.stop();
     this.feed = undefined;
+    this.probe?.remove(this.listen);
+    this.gov = undefined;
   }
 }

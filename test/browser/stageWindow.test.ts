@@ -98,6 +98,7 @@ describe('the stage-first window', () => {
       'Lock items',
       'Settings',
       'Log',
+      'About',
     ]);
     await page.keyboard.press('Escape');
     expect(await page.locator('#main-menu').isVisible()).toBe(false);

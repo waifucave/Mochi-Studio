@@ -95,6 +95,12 @@ export interface SpoutOutputState {
   /** How frames reach the sender: kept on the GPU, or read back to memory. */
   path?: SpoutPath;
   frames: number;
+  /** The frames a second it may send now (lowered while the app's window answers slowly). */
+  fps?: number;
+  /** The frames a second it actually sends (over the last few seconds). */
+  sentFps?: number;
+  /** Held below the rate asked for: this computer can't keep up at this size. */
+  held?: boolean;
   error?: string;
 }
 

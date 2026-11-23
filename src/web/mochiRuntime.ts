@@ -174,6 +174,19 @@ export class MochiRuntime implements AvatarRuntime {
 
   /** Why the renderer cannot draw (no WebGL 2), or undefined when it can. */
   problem: string | undefined;
+  /**
+   * The graphics context is lost (Mochi2D's `contextlost`, until its `contextrestored`). On the
+   * Windows runner the window's context was sometimes lost as the app started; a model loaded
+   * then failed with a texture limit of null ("Texture size 1x1 outside [1, null]").
+   */
+  graphicsLost = false;
+  private untilRestored: Array<() => void> = [];
+  /** Resolves at once, or when the graphics context is back. */
+  private graphicsBack(): Promise<void> {
+    return this.graphicsLost
+      ? new Promise((resolve) => this.untilRestored.push(resolve))
+      : Promise.resolve();
+  }
   /** How many of the model's warnings have been told (load's notices included). */
   private warningsSeen = 0;
 
@@ -192,6 +205,15 @@ export class MochiRuntime implements AvatarRuntime {
       return;
     }
     this.view.on('error', ({ error }) => console.error('Mochi2D:', error));
+    this.view.on('contextlost', () => {
+      this.graphicsLost = true;
+      this.events.emit('graphicsContext', { lost: true });
+    });
+    this.view.on('contextrestored', () => {
+      this.graphicsLost = false;
+      for (const resolve of this.untilRestored.splice(0)) resolve();
+      this.events.emit('graphicsContext', { lost: false });
+    });
     this.view.on('motionevent', ({ value }) => this.events.emit('motionUserEvent', { value }));
     this.resizeObserver = new ResizeObserver(() => {
       this.pixelsPerUnit = undefined;
@@ -243,12 +265,22 @@ export class MochiRuntime implements AvatarRuntime {
     // The person's own model: its compressed motion sounds play too (MP3, Ogg);
     // a collaborator's model is an item, and items play no motion sounds.
     let m: MochiModel;
+    const options = {
+      settings: model.manifest.file,
+      textures: MODEL_TEXTURE_LIMITS,
+      sounds: { compressed: true },
+    };
     try {
-      m = await this.v.load(w.source, {
-        settings: model.manifest.file,
-        textures: MODEL_TEXTURE_LIMITS,
-        sounds: { compressed: true },
-      });
+      // Without a graphics context the GPU's limits read as nothing: the load waits for it.
+      await this.graphicsBack();
+      try {
+        m = await this.v.load(w.source, options);
+      } catch (e) {
+        // Lost during the load: once more when it is back.
+        if (!this.graphicsLost) throw e;
+        await this.graphicsBack();
+        m = await this.v.load(w.source, options);
+      }
     } catch (e) {
       // Mochi2D keeps the model shown before, and so does this state.
       throw plainRefusal(e, 'This model', w.head);

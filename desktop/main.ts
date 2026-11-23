@@ -30,7 +30,9 @@ import { isZipPath, RecentModels, recentState } from './recent.ts';
 import { isOwnAddress, parseWebItem } from '../src/core/webItems.ts';
 import { maxArchiveFileBytes, MODEL_ARCHIVE_LIMITS } from '../src/core/archiveLimits.ts';
 import { parseSpoutConfig } from '../src/core/spout.ts';
+import { FrameGovernor, rateText, startFps } from '../src/core/frameGovernor.ts';
 import { SpoutOutputs, loadSpoutAddon } from './spout.ts';
+import { setPageRate, WindowProbe } from './windowProbe.ts';
 import { parseVirtualCameraConfig } from '../src/core/virtualCamera.ts';
 import { VirtualCamera, cameraBackend } from './virtualCamera.ts';
 
@@ -172,7 +174,12 @@ async function start(): Promise<void> {
   const screenOf = () =>
     screen.getAllDisplays().find((d) => d.id === pointerScreen) ?? screen.getPrimaryDisplay();
   // Spout2 output: on Windows, with the addon built for this app.
-  const spout = new SpoutOutputs(loadSpoutAddon(__dirname), reportMainError);
+  // How quickly the window answers, for the outputs that draw hidden pages: each lowers its
+  // frame rate while the window is slow (src/core/frameGovernor.ts).
+  const probe = new WindowProbe(() =>
+    mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : undefined,
+  );
+  const spout = new SpoutOutputs(loadSpoutAddon(__dirname), reportMainError, probe);
   ipcMain.handle('mochi:spout-configure', (e, raw: unknown) => {
     if (!own(e.senderFrame?.url)) return null;
     const c = parseSpoutConfig(raw, origin);
@@ -181,7 +188,7 @@ async function start(): Promise<void> {
   ipcMain.handle('mochi:spout-state', (e) => (own(e.senderFrame?.url) ? spout.state() : null));
   app.on('will-quit', () => spout.stopAll());
   // The virtual camera: a v4l2loopback device on Linux, the app's DirectShow camera on Windows.
-  const camera = new VirtualCamera(cameraBackend(__dirname), reportMainError);
+  const camera = new VirtualCamera(cameraBackend(__dirname), reportMainError, probe);
   ipcMain.handle('mochi:vcam-configure', (e, raw: unknown) => {
     if (!own(e.senderFrame?.url)) return null;
     const c = parseVirtualCameraConfig(raw, origin);
@@ -313,17 +320,36 @@ async function start(): Promise<void> {
     wc.on('will-navigate', (ev, url) => {
       if (new URL(url).origin !== home) ev.preventDefault();
     });
-    wc.setFrameRate(src.fps);
+    // Its frames go to the window: fewer while the window answers slowly.
+    const gov = new FrameGovernor(
+      src.fps,
+      {
+        apply: (fps) =>
+          setImmediate(() => {
+            if (!page.isDestroyed()) setPageRate(wc, fps, false);
+          }),
+        tell: (fps) =>
+          reportMainError(
+            `A web item is shown at ${rateText(fps)} frames a second: this computer can't keep up at its size (${src.width} × ${src.height}).`,
+          ),
+      },
+      startFps(src.width, src.height),
+      undefined,
+      // A web page paints only when it changes: its rate says nothing of this computer.
+      false,
+    );
+    const listen = (ms: number) => gov.sample(ms);
+    probe.add(listen);
+    wc.setFrameRate(Math.max(1, gov.fps));
     const sender = e.sender;
-    let last = 0;
     wc.on('paint', (_ev, _dirty, image) => {
-      const now = Date.now();
-      if (sender.isDestroyed() || now - last < 1000 / src.fps - 5) return;
-      last = now;
+      // Sooner than the rate allows: skipped, not kept.
+      if (sender.isDestroyed() || !gov.allow()) return;
       const { width, height } = image.getSize();
       sender.send('mochi:web-item-frame', id, { width, height, data: image.toBitmap() });
     });
     page.on('closed', () => {
+      probe.remove(listen);
       if (webItems.get(id) === page) webItems.delete(id);
     });
     void wc.loadURL(src.url).catch(() => undefined);
@@ -370,6 +396,8 @@ async function start(): Promise<void> {
     width: 1280,
     height: 820,
     title: 'Mochi Studio',
+    // The app's icon in the title bar and taskbar (macOS takes the bundle's own).
+    ...(process.platform === 'darwin' ? {} : { icon: join(__dirname, 'icon.png') }),
     backgroundColor: '#1d1b26',
     webPreferences: {
       contextIsolation: true,

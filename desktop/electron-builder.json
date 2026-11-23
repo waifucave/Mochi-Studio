@@ -3,12 +3,14 @@
   "productName": "Mochi Studio",
   "directories": {
     "app": "dist/app",
-    "output": "dist/release"
+    "output": "dist/release",
+    "buildResources": "dist/build"
   },
   "files": [
     "main.cjs",
     "preload.cjs",
     "package.json",
+    "icon.png",
     "web/**/*",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
@@ -21,13 +23,19 @@
   "publish": null,
   "linux": {
     "target": ["dir", "AppImage"],
+    "artifactName": "Mochi-Studio-${version}-linux-${arch}.${ext}",
+    "icon": "dist/build/icon.png",
     "category": "Video"
   },
   "win": {
-    "target": ["zip"]
+    "target": ["zip"],
+    "artifactName": "Mochi-Studio-${version}-windows-${arch}.${ext}",
+    "icon": "dist/build/icon.png"
   },
   "mac": {
     "target": ["zip"],
+    "artifactName": "Mochi-Studio-${version}-macos-${arch}.${ext}",
+    "icon": "dist/build/icon.png",
     "identity": null,
     "extendInfo": {
       "NSCameraUsageDescription": "Mochi Studio uses the camera to track your face. Video stays on this computer.",

@@ -135,4 +135,20 @@ describe('errors never stop the stream', () => {
       JSON.stringify(pageErrors),
     ).toEqual([]);
   });
+
+  it("shows the About from the main menu: package.json's version, and where to report", async () => {
+    const version = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+      .version as string;
+    await page.locator('#menu-button').click();
+    await page.locator('#menu-about').click();
+    const about = page.locator('dialog.doc-dialog');
+    await expect.poll(() => about.isVisible()).toBe(true);
+    const text = (await about.textContent()) ?? '';
+    expect(text).toContain(`About Mochi Studio`);
+    expect(text).toContain(`Mochi Studio ${version}\nThe browser app.`);
+    expect(text).toContain('Save for a bug report…');
+    expect(text).toContain('https://github.com/waifucave/Mochi-Studio/issues');
+    await about.locator('.doc-close').click();
+    await expect.poll(() => page.locator('dialog.doc-dialog').count()).toBe(0);
+  });
 });

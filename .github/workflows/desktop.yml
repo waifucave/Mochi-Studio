@@ -1,12 +1,22 @@
 # Builds the unsigned desktop packages on Linux, Windows and macOS, as
 # workflow artifacts, and runs the Spout2 and virtual camera tests. Started
 # by hand (Actions → Desktop packages → Run workflow) or by a version tag,
-# never by an ordinary push: macOS runners cost the most minutes. It
-# publishes no release.
+# never by an ordinary push: macOS runners cost the most minutes.
+#
+# Run by hand, it publishes nothing. On a version tag (v + package.json's
+# version), the release job then publishes a pre-release with the packages,
+# once every other job has passed (scripts/release.mjs checks the tag, the
+# changelog, the notes and the packages first).
 name: Desktop packages
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run every job, or only the Spout2 or the Linux camera test (a version tag runs them all)'
+        type: choice
+        options: [all, spout, vcam]
+        default: all
   push:
     tags: ['v*']
 
@@ -15,6 +25,7 @@ permissions:
 
 jobs:
   package:
+    if: inputs.only != 'spout' && inputs.only != 'vcam'
     strategy:
       fail-fast: false
       matrix:
@@ -23,17 +34,17 @@ jobs:
             name: linux
             files: |
               desktop/dist/release/*.AppImage
-              desktop/dist/release/HOW-TO-OPEN.txt
+              desktop/dist/release/HOW-TO-OPEN-linux.txt
           - os: windows-latest
             name: windows
             files: |
               desktop/dist/release/*.zip
-              desktop/dist/release/HOW-TO-OPEN.txt
+              desktop/dist/release/HOW-TO-OPEN-windows.txt
           - os: macos-latest
             name: macos
             files: |
               desktop/dist/release/*.zip
-              desktop/dist/release/HOW-TO-OPEN.txt
+              desktop/dist/release/HOW-TO-OPEN-macos.txt
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -65,13 +76,77 @@ jobs:
         if: matrix.name == 'linux'
         run: npm run build:v4l2
       - name: Build the packages (unsigned)
-        run: npm run desktop:package
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run desktop:package 2>&1 | tee package.log
+          # The app's own icon (public/icon.svg) must be in every package, not Electron's.
+          if grep -qi "default Electron icon is used" package.log; then
+            echo "::error::electron-builder used Electron's default icon."
+            exit 1
+          fi
         env:
           # No signing, and no auto-discovery of signing identities.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Add the how-to-open note (what the unsigned-app warnings mean)
         shell: bash
-        run: cp "desktop/how-to-open/${{ matrix.name }}.txt" desktop/dist/release/HOW-TO-OPEN.txt
+        run: |
+          version=$(node -p "require('./package.json').version")
+          sed "s/<version>/$version/g" "desktop/how-to-open/${{ matrix.name }}.txt" \
+            > "desktop/dist/release/HOW-TO-OPEN-${{ matrix.name }}.txt"
+      # The version in the files' properties: the app and the camera DLLs (Windows), the
+      # app and its Camera Extension (macOS). The packages' names carry it on every system.
+      - name: The version in the files' properties
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $v = node -p "require('./package.json').version"
+          $files = @(Get-Item 'desktop/dist/release/win-unpacked/Mochi Studio.exe') +
+            @(Get-ChildItem -Recurse desktop/dist/release/win-unpacked -Filter 'mochi_camera_*.dll')
+          foreach ($f in $files) {
+            $p = $f.VersionInfo.ProductVersion
+            "$($f.FullName.Substring((Get-Location).Path.Length + 1)): $p" | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+            if (-not $p -or -not $p.StartsWith($v)) { throw "$($f.Name) says version '$p', not $v." }
+          }
+          if ($files.Count -lt 4) { throw "Expected the app and three camera DLLs, found $($files.Count) files." }
+      - name: The version in the files' properties
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          app=$(ls -d desktop/dist/release/mac*/"Mochi Studio.app" | head -1)
+          for plist in "$app/Contents/Info.plist" "$app"/Contents/Library/SystemExtensions/*.systemextension/Contents/Info.plist; do
+            p=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+            echo "${plist#desktop/dist/release/}: $p" | tee -a "$GITHUB_STEP_SUMMARY"
+            [ "$p" = "$v" ] || { echo "::error::$plist says version $p, not $v."; exit 1; }
+          done
+          echo "The app's minimum macOS: $(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Its architectures: $(lipo -archs "$app/Contents/MacOS/Mochi Studio")" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Each package started on its runner: its bridge answers with the version and serves the
+      # pages, and its window connects (scripts/smoke-package.mjs). Linux: under a virtual
+      # display, the AppImage extracted (the runner has no FUSE), with Chromium's sandbox on.
+      - name: Start the packaged app
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a node scripts/smoke-package.mjs desktop/dist/release/*.AppImage --appimage-extract-and-run
+      - name: Start the packaged app
+        if: matrix.name == 'windows'
+        run: node scripts/smoke-package.mjs "desktop/dist/release/win-unpacked/Mochi Studio.exe"
+      - name: Start the packaged app
+        if: matrix.name == 'macos'
+        shell: bash
+        run: |
+          app=$(ls -d desktop/dist/release/mac*/"Mochi Studio.app" | head -1)
+          node scripts/smoke-package.mjs "$app/Contents/MacOS/Mochi Studio"
+      - name: The package's name and size
+        shell: bash
+        run: |
+          cd desktop/dist/release
+          for f in *.AppImage *.zip HOW-TO-OPEN-*.txt; do
+            [ -f "$f" ] && echo "$f: $(wc -c < "$f") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: mochi-studio-${{ matrix.name }}
@@ -83,6 +158,7 @@ jobs:
   # which a Spout2 receiver reads the app's senders back, and measures the
   # cost of both frame paths (test-results/spout-cost.json).
   spout:
+    if: inputs.only != 'vcam'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +188,7 @@ jobs:
   # can't load on the runner's kernel, the real-device test is skipped and
   # says why; the step below writes what happened to the job summary.
   vcam:
+    if: inputs.only != 'spout'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +199,9 @@ jobs:
       # One package at a time: a name missing on this kernel (the runners'
       # Azure kernels have no linux-modules-extra) must not stop the rest.
       # DKMS builds the module against the running kernel's headers.
+      # A run where apt hung for over ten minutes on the runner: bounded, so it fails instead.
       - name: Install v4l2loopback, ffmpeg and a virtual display
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg xvfb
@@ -131,8 +210,19 @@ jobs:
           sudo apt-get install -y "linux-modules-extra-$(uname -r)" || echo "No linux-modules-extra for $(uname -r) (not needed with DKMS)."
       - name: Load v4l2loopback as Mochi Studio Camera
         run: |
+          # The runner's user is not in the video group: a udev rule opens the device to it, so
+          # that udev, which sets the node's mode after the module loads (and may again later),
+          # doesn't take a chmod back.
+          echo 'KERNEL=="video10", SUBSYSTEM=="video4linux", MODE="0666"' | sudo tee /etc/udev/rules.d/99-mochi-vcam-test.rules
+          sudo udevadm control --reload-rules
           if sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="Mochi Studio Camera" exclusive_caps=1; then
+            sudo udevadm settle --timeout=30 || true
             sudo chmod 666 /dev/video10
+            ls -l /dev/video10
+            if ! { test -r /dev/video10 && test -w /dev/video10; }; then
+              echo "::error::/dev/video10 is not readable and writable by $(id -un)."
+              exit 1
+            fi
             echo "v4l2loopback loaded: $(cat /sys/class/video4linux/video10/name)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "v4l2loopback did not load on kernel $(uname -r): the real-device test is skipped." >> "$GITHUB_STEP_SUMMARY"
@@ -144,7 +234,44 @@ jobs:
       - name: The native conversion against the reference
         run: npx vitest run --project unit src/core/virtualCamera.test.ts
       - name: The virtual camera, with the fake device and the real one
-        run: xvfb-run -a npx vitest run --project browser test/browser/vcam.test.ts
+        run: |
+          ls -l /dev/video10 2>/dev/null || true
+          xvfb-run -a npx vitest run --project browser test/browser/vcam.test.ts
         env:
           MOCHI_DESKTOP_TEST: '1'
           MOCHI_VCAM_TEST: '1'
+
+  # On a version tag only: the pre-release, once every package and test job has passed.
+  # The only job that may write to the repository. scripts/release.mjs checks, before anything
+  # is published, that the tag is v + package.json's version, that CHANGELOG.md has a section
+  # for it and docs/releases/ its notes, and that every package and note is there.
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [package, spout, vcam]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The tag, the version, the changelog and the notes agree
+        run: node scripts/release.mjs check "$GITHUB_REF_NAME"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mochi-studio-*
+          path: artifacts
+      - name: Every package and note is there
+        run: >-
+          node scripts/release.mjs stage "$GITHUB_REF_NAME" artifacts release release-notes.md
+          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag --prerelease \
+            --title "Mochi Studio $version (pre-release, unsigned)" \
+            --notes-file release-notes.md

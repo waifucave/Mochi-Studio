@@ -261,12 +261,26 @@ describe.skipIf(!real || !dev)('the virtual camera, with a v4l2loopback device (
 
   it('is listed and read by a camera app: size, colors, background and mirror', async () => {
     await setCamera(win, { enabled: true, background: '#00B140' });
-    await expect.poll(async () => (await cameraState(win)).active, { timeout: 20_000 }).toBe(true);
-    expect((await cameraState(win)).device).toBe(dev);
-    const f = await capture();
+    // (The whole state goes in a failure: its error says why the camera isn't on.)
+    let state = await cameraState(win);
+    for (const end = Date.now() + 20_000; !state.active && Date.now() < end;) {
+      await new Promise((r) => setTimeout(r, 250));
+      state = await cameraState(win);
+    }
+    expect(state.active, JSON.stringify(state)).toBe(true);
+    expect(state.device).toBe(dev);
+    // The camera sends from its page's first paint, which can come before the model is drawn
+    // (the background alone): read until the avatar is there, as the fake-device test does.
+    const t0 = Date.now();
+    let f = await capture();
     expect(f.length).toBe(W * H * 2);
+    for (const end = t0 + 20_000; !near(rgb(f, at(BODY)), BODY_OVER_GREEN) && Date.now() < end;)
+      f = await capture();
+    console.log(`The avatar was in the camera's frames ${Date.now() - t0} ms after it was on.`);
     expect(rgb(f, { x: 2, y: 2 })).toSatisfy((c: number[]) => near(c, GREEN));
-    expect(rgb(f, at(BODY))).toSatisfy((c: number[]) => near(c, BODY_OVER_GREEN));
+    expect(rgb(f, at(BODY)), JSON.stringify(await cameraState(win))).toSatisfy((c: number[]) =>
+      near(c, BODY_OVER_GREEN),
+    );
     await setCamera(win, { mirror: true });
     await expect
       .poll(async () => near(rgb(await capture(), at(BODY, true)), BODY_OVER_GREEN), {

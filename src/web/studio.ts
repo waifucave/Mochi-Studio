@@ -350,6 +350,17 @@ export class Studio implements StudioApi {
     runtime.on('motionFinished', (p) => this.events.emit('motionFinished', p));
     runtime.on('itemMoved', () => this.saveItems());
     runtime.on('modelNotice', ({ text }) => this.events.emit('log', { text, kind: 'error' }));
+    runtime.on('graphicsContext', ({ lost }) =>
+      this.events.emit(
+        'log',
+        lost
+          ? {
+              text: "The graphics context was lost (the graphics driver or Mochi Studio's graphics process restarted): drawing pauses until it is back, and a model being loaded waits for it.",
+              kind: 'error',
+            }
+          : { text: 'The graphics context is back.', kind: 'info' },
+      ),
+    );
     sync?.onMessage((m) => this.onSync(m));
     this.commands = new CommandRegistry<StudioApi>(this, studioCommands());
     this.ready = store.getApp().then(

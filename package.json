@@ -4,6 +4,14 @@
   "private": true,
   "description": "Open-source live-avatar app for models made with Live2D Cubism, built on Mochi2D.",
   "license": "MIT",
+  "homepage": "https://github.com/waifucave/Mochi-Studio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/waifucave/Mochi-Studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/waifucave/Mochi-Studio/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -55,6 +63,7 @@
     "node-gyp": "13.1.0",
     "playwright-core": "1.63.0",
     "prettier": "3.9.10",
+    "sharp": "0.35.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.5",

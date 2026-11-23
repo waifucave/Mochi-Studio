@@ -13,6 +13,8 @@
  * Chromium's frames have premultiplied alpha, which is what Spout2 receivers
  * expect when set to premultiplied (OBS's composite mode).
  */
+import { FrameGovernor, rateText, startFps } from '../src/core/frameGovernor.ts';
+import { setPageRate, type WindowProbe } from './windowProbe.ts';
 import { BrowserWindow, screen } from 'electron';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -78,8 +80,12 @@ interface Output {
   /** The last frame's size. */
   frame?: { width: number; height: number };
   frames: number;
+  perf: OutputPerf;
   /** The frame rate asked for (the stage's cap). */
   fps: number;
+  /** Keeps the window answering: the rate this output may send at now. */
+  gov: FrameGovernor;
+  listen: (ms: number) => void;
   error?: string;
 }
 
@@ -92,15 +98,101 @@ interface Output {
  */
 export const READBACK_FPS = 30;
 
+/** Per output: what its paints cost the main process (for the state and the tests). */
+export interface OutputPerf {
+  /** Paint events received. */
+  paints: number;
+  /** Milliseconds spent copying frames out (NativeImage.toBitmap), in all and the most at once. */
+  copyMs: number;
+  copyMaxMs: number;
+  /** Milliseconds spent in the addon's send, in all and the most at once. */
+  sendMs: number;
+  sendMaxMs: number;
+}
+
+/**
+ * How late the main process's event loop runs while outputs send: a timer
+ * every 50 ms, and how much later than that it fired. Kept for the last 30 s.
+ */
+class LoopLag {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private last = 0;
+  samples: Array<[number, number]> = [];
+  start(): void {
+    if (this.timer) return;
+    this.last = performance.now();
+    this.timer = setInterval(() => {
+      const now = performance.now();
+      this.samples.push([Date.now(), Math.max(0, now - this.last - 50)]);
+      this.last = now;
+      const cut = Date.now() - 30_000;
+      while (this.samples.length && this.samples[0]![0] < cut) this.samples.shift();
+    }, 50);
+    this.timer.unref?.();
+  }
+  stop(): void {
+    clearInterval(this.timer);
+    this.timer = undefined;
+  }
+  /** The largest lag in the last `ms` milliseconds. */
+  max(ms = 5000): number {
+    const cut = Date.now() - ms;
+    return Math.round(Math.max(0, ...this.samples.filter(([t]) => t >= cut).map(([, l]) => l)));
+  }
+}
+
 export class SpoutOutputs {
   private outputs = new Map<string, Output>();
 
   private addon: SpoutAddon | string;
   private log: (m: string) => void;
+  readonly lag = new LoopLag();
+  readonly probe: WindowProbe | undefined;
 
-  constructor(addon: SpoutAddon | string, log: (m: string) => void) {
+  constructor(addon: SpoutAddon | string, log: (m: string) => void, probe?: WindowProbe) {
     this.addon = addon;
     this.log = log;
+    this.probe = probe;
+    if (probe)
+      probe.extra = () =>
+        [...this.outputs.values()].map((o) => ({
+          name: o.cfg.name,
+          frames: o.frames,
+          fps: o.gov.fps,
+          sentFps: o.gov.sendingFps,
+          held: o.gov.held,
+        }));
+    // For the tests, from the main process: what the outputs cost it.
+    (globalThis as Record<string, unknown>).__mochiSpout = this;
+  }
+
+  /** Each output's paint costs, and the main loop's lag (for the tests and the state). */
+  perf(): {
+    lagMaxMs: number;
+    lag: Array<[number, number]>;
+    windowMaxMs: number;
+    outputs: Record<
+      string,
+      OutputPerf & { frames: number; fps: number; sentFps: number; held: boolean }
+    >;
+  } {
+    return {
+      lagMaxMs: this.lag.max(),
+      lag: this.lag.samples.slice(-200),
+      windowMaxMs: this.probe?.max() ?? 0,
+      outputs: Object.fromEntries(
+        [...this.outputs.values()].map((o) => [
+          o.cfg.name,
+          {
+            ...o.perf,
+            frames: o.frames,
+            fps: o.gov.fps,
+            sentFps: o.gov.sendingFps,
+            held: o.gov.held,
+          },
+        ]),
+      ),
+    };
   }
 
   get available(): boolean {
@@ -119,6 +211,9 @@ export class SpoutOutputs {
         mirror: o.cfg.mirror,
         ...(o.path ? { path: o.path } : {}),
         frames: o.frames,
+        fps: o.gov.fps,
+        sentFps: o.gov.sendingFps,
+        ...(o.gov.held ? { held: true } : {}),
         ...(o.error ? { error: o.error } : {}),
       })),
     };
@@ -184,6 +279,22 @@ export class SpoutOutputs {
         backgroundThrottling: false,
       },
     });
+    // The rate changes outside the page's paint events (inside one, a transparent output
+    // turned white on the Windows runner).
+    const gov = new FrameGovernor(
+      readback ? Math.min(c.fps, READBACK_FPS) : c.fps,
+      {
+        apply: (fps) =>
+          setImmediate(() => {
+            if (!win.isDestroyed()) setPageRate(win.webContents, fps);
+          }),
+        tell: (fps) =>
+          this.log(
+            `Spout2 is sending at ${rateText(fps)} frames a second: this computer can't keep up at this size (${cfg.width} × ${cfg.height}).`,
+          ),
+      },
+      startFps(cfg.width, cfg.height),
+    );
     const o: Output = {
       cfg,
       scale: k,
@@ -191,27 +302,47 @@ export class SpoutOutputs {
       sender,
       url: spoutPageUrl(c.page, cfg),
       frames: 0,
+      perf: { paints: 0, copyMs: 0, copyMaxMs: 0, sendMs: 0, sendMaxMs: 0 },
       forced: readback,
       fps: c.fps,
+      gov,
+      listen: (ms) => gov.sample(ms),
     };
     this.outputs.set(cfg.name, o);
+    this.lag.start();
+    this.probe?.add(o.listen);
     win.webContents.setAudioMuted(true);
-    win.webContents.setFrameRate(readback ? Math.min(c.fps, READBACK_FPS) : c.fps);
+    win.webContents.setFrameRate(Math.max(1, gov.fps));
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e) => e.preventDefault());
     win.webContents.on('paint', (event, _dirty, image) => {
       const texture = (event as unknown as { texture?: SharedTexture }).texture;
       try {
+        // Sooner than the rate allows: skipped, not kept.
+        if (!gov.allow()) return;
         if (texture) {
           const handle = texture.textureInfo.handle.ntHandle;
           o.path = 'gpu';
           o.frame = { ...texture.textureInfo.codedSize };
+          o.perf.paints++;
           if (handle && o.sender.sendSharedTexture(handle)) o.frames++;
         } else {
           const { width, height } = image.getSize();
           o.path = 'readback';
           o.frame = { width, height };
-          if (width && height && o.sender.sendImage(image.toBitmap(), width, height)) o.frames++;
+          o.perf.paints++;
+          if (width && height) {
+            const t0 = performance.now();
+            const bitmap = image.toBitmap();
+            const t1 = performance.now();
+            const sent = o.sender.sendImage(bitmap, width, height);
+            const t2 = performance.now();
+            o.perf.copyMs += t1 - t0;
+            o.perf.copyMaxMs = Math.max(o.perf.copyMaxMs, t1 - t0);
+            o.perf.sendMs += t2 - t1;
+            o.perf.sendMaxMs = Math.max(o.perf.sendMaxMs, t2 - t1);
+            if (sent) o.frames++;
+          }
         }
         o.error = undefined;
       } catch (e) {
@@ -220,6 +351,8 @@ export class SpoutOutputs {
         texture?.release();
       }
     });
+    // A page loaded anew starts without the cap.
+    win.webContents.on('did-finish-load', () => setPageRate(win.webContents, gov.fps));
     win.webContents.on('render-process-gone', (_e, d) => {
       o.error = `its page stopped (${d.reason})`;
       this.log(`Spout2 output ${cfg.name}: ${o.error}`);
@@ -241,7 +374,7 @@ export class SpoutOutputs {
       o.win.setContentSize(Math.round(cfg.width / k), Math.round(cfg.height / k));
     }
     o.fps = c.fps;
-    o.win.webContents.setFrameRate(o.path === 'readback' ? Math.min(c.fps, READBACK_FPS) : c.fps);
+    o.gov.setWanted(o.path === 'readback' ? Math.min(c.fps, READBACK_FPS) : c.fps);
     const url = spoutPageUrl(c.page, cfg);
     o.cfg = cfg;
     if (url !== o.url) {
@@ -273,6 +406,8 @@ export class SpoutOutputs {
     const o = this.outputs.get(name);
     if (!o) return;
     this.outputs.delete(name);
+    this.probe?.remove(o.listen);
+    if (!this.outputs.size) this.lag.stop();
     if (!o.win.isDestroyed()) o.win.destroy();
     try {
       o.sender.release();

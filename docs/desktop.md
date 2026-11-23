@@ -53,11 +53,21 @@ no separate `npm run bridge`, and no pairing.
     card, frames stay on the card (the GPU path), which this runner cannot
     show; that costs far less, and is still to be measured on a real
     machine.
-  - **Larger than the screen** (1920 × 1080 on the runner's 1024 × 720):
-    drawn at its own size, Windows kept the window to the screen's size; drawn
-    smaller and scaled up, the frames had the right size but stayed empty.
-    Both are without a graphics card; until they are checked on one, pick a
-    size that fits the screen.
+  - **Larger than the screen** (1920 × 1080 on the runner's 1024 × 720): it is
+    drawn smaller and scaled up, so its frames have the full size. Without a
+    graphics card, drawing it in software at full rate took the graphics
+    process the window shares, and the window stopped answering for up to a
+    minute (the main process, which copies and sends each frame in about 3 ms,
+    went on answering). Now each output's frame rate follows how quickly the
+    app answers ([user-guide.md](user-guide.md#when-the-computer-cant-keep-up-desktop-app)).
+    On the runner, with the window shown and a moving head, the window's own
+    timers were at most 79 ms late in 20 runs, and it drew 28 to 56 frames a
+    second; the 1920 × 1080 output got few frames there (0 to 12 a second,
+    held each time, and the app says so). The window measures itself
+    (`src/core/pageLateness.ts`), because the main process, which also asks it
+    four times a second, is itself late by up to several seconds at times on
+    the runner, with the output paused and with no output at all; the test
+    records that too, with 10 s without an output to compare.
 - **A virtual camera (Linux):** the Camera tab's **Virtual camera** section
   sends the avatar as "Mochi Studio Camera" through a v4l2loopback device,
   for call apps ([user-guide.md](user-guide.md#a-virtual-camera-for-calls-linux-desktop-app),
@@ -116,20 +126,22 @@ F-keys, the keypad and arrows are the same on every layout.
 
 The builds are **unsigned**. Windows SmartScreen and macOS Gatekeeper warn
 about unsigned apps. Each package from the workflow comes with a
-`HOW-TO-OPEN.txt` saying what the warnings mean on that system and how to
-get past them (`desktop/how-to-open/`). In short:
+`HOW-TO-OPEN-<system>.txt` saying what the warnings mean on that system and
+how to get past them (`desktop/how-to-open/`). In short:
 
-- **Windows:** unzip `Mochi Studio-<version>-win.zip` and run
-  `Mochi Studio.exe`. At the SmartScreen notice, choose "More info", then
+- **Windows** (64-bit): unzip `Mochi-Studio-<version>-windows-x64.zip` and
+  run `Mochi Studio.exe`. At the SmartScreen notice, choose "More info", then
   "Run anyway".
-- **macOS:** unzip, move the app to Applications, then right-click it and
-  choose "Open" the first time. Or, in a terminal:
+- **macOS** (Apple silicon): unzip `Mochi-Studio-<version>-macos-arm64.zip`,
+  move the app to Applications, then right-click it and choose "Open" the
+  first time. Or, in a terminal:
 
   ```sh
   xattr -dr com.apple.quarantine "/Applications/Mochi Studio.app"
   ```
 
-- **Linux:** `chmod +x "Mochi Studio-<version>.AppImage"`, then run it.
+- **Linux** (x86_64): `chmod +x Mochi-Studio-<version>-linux-x86_64.AppImage`,
+  then run it.
 
 **Licenses in every package:** beside the executable (on macOS, in the
 app's `Contents` folder) are `LICENSE.mochi-studio.txt`,
@@ -143,8 +155,17 @@ the build bundles, and a test checks they are up to date.
 The **Desktop packages** workflow (`.github/workflows/desktop.yml`) builds
 the Linux, Windows and macOS packages on GitHub's runners. It is started by
 hand (Actions → Desktop packages → Run workflow) or by a version tag, and
-attaches the packages to the run as artifacts for 14 days. It publishes no
-release.
+attaches the packages to the run as artifacts for 14 days. Each package job
+also checks the version in the files' properties and starts the package on
+its runner (`scripts/smoke-package.mjs`).
+
+- **Run by hand,** it publishes nothing.
+- **On a version tag** (`v` and `package.json`'s version), its release job
+  publishes a pre-release, once every package and test job has passed.
+  First, `scripts/release.mjs` checks that the tag matches the version,
+  that `CHANGELOG.md` has a section for it, that `docs/releases/` has its
+  notes, and that every package and note is there. The release has the
+  packages, each system's `HOW-TO-OPEN-<system>.txt`, and those notes.
 
 ## Building it yourself
 

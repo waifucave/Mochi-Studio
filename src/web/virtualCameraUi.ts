@@ -5,6 +5,7 @@
  * and Uninstall; and on Linux, while the device is missing, what to install
  * and run. Desktop app only.
  */
+import { rateText } from '../core/frameGovernor';
 import {
   CAMERA_NAME,
   CAMERA_RATES,
@@ -40,6 +41,9 @@ export function virtualCameraSection(
     if (st.error) return `Problem: ${st.error}`;
     if (st.problem) return st.problem;
     if (!st.active) return 'Starting…';
+    // The camera writes at its rate; while held, its picture changes fewer times a second.
+    if (st.heldFps)
+      return `Sending ${st.width} × ${st.height} to ${st.device}; the picture changes ${rateText(st.heldFps)} times a second: this computer can't keep up at this size.`;
     return `Sending ${st.width} × ${st.height} at ${st.fps} frames a second to ${st.device}.`;
   };
   const sizeKey = (z: { width: number; height: number }) => `${z.width}x${z.height}`;

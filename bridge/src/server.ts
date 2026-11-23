@@ -32,6 +32,7 @@ import { PluginServer } from './plugins.ts';
 import { BridgeStore, parseScopes } from './store.ts';
 import { guardSocket, guardWebSocket } from './socketGuard.ts';
 
+/** The bridge's version: Mochi Studio's (package.json's; test/unit/version.test.ts checks it). */
 export const BRIDGE_VERSION = '0.1.0';
 
 export interface BridgeOptions {

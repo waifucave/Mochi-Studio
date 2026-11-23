@@ -2,6 +2,7 @@
 // (bundled with the bridge) and the web pages. Run `npm run desktop:build`
 // (after `vite build`), then `npm run desktop` or `npm run desktop:package`.
 import { build } from 'esbuild';
+import sharp from 'sharp';
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -36,6 +37,12 @@ await build({
   logLevel: 'warning',
 });
 cpSync(here('../dist/'), join(out, 'web'), { recursive: true });
+// The app's icon, from its one source (public/icon.svg): 1024 pixels for electron-builder, which
+// makes the Windows .ico, the macOS .icns and the Linux icons from it, and 256 for the window.
+const icon = here('../public/icon.svg');
+mkdirSync(here('./dist/build'), { recursive: true });
+await sharp(icon, { density: 288 }).resize(1024, 1024).png().toFile(here('./dist/build/icon.png'));
+await sharp(icon, { density: 72 }).resize(256, 256).png().toFile(join(out, 'icon.png'));
 // The app's license and the third-party notices, in every build (electron-builder also puts
 // them beside the executable, with Electron's own license files).
 cpSync(here('../LICENSE'), join(out, 'LICENSE'));

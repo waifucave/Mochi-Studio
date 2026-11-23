@@ -2,9 +2,10 @@ Mochi Studio for Windows: how to open it
 ========================================
 
 This build is not signed. Windows warns about apps it does not know; the
-warning does not mean anything harmful was found.
+warning does not mean anything harmful was found. It runs on 64-bit Windows
+10 and 11.
 
-1. Unzip "Mochi Studio-<version>-win.zip" into a folder of your own
+1. Unzip Mochi-Studio-<version>-windows-x64.zip into a folder of your own
    (for example Documents\Mochi Studio). Do not run it from inside the zip.
 2. Run "Mochi Studio.exe".
 3. If "Windows protected your PC" (SmartScreen) appears: click "More info",

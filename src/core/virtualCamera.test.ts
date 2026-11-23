@@ -126,7 +126,7 @@ function fakeTimers() {
 describe('the camera’s writer, against a fake device', () => {
   const o = { width: 4, height: 2, fps: 30, under: 0 };
 
-  it('sets the format, writes each new frame, and repeats the last one at the rate', () => {
+  it('sets the format, and writes the newest frame at the camera’s rate, new or repeated', () => {
     const d = fakeDevice();
     const t = fakeTimers();
     const feed = new CameraFeed(d, o, t);
@@ -139,20 +139,28 @@ describe('the camera’s writer, against a fake device', () => {
     expect(d.writes).toHaveLength(1);
     expect(d.writes[0]![0]).toBe(235);
     expect(d.writes[0]).toHaveLength(4 * 2 * 2);
-    // Painting every frame: no repeats on top.
+    // Painting every frame: 30 a second, no more.
     for (let i = 0; i < 30; i++) {
       t.advance(1000 / 30);
       feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
     }
-    expect(d.writes.length).toBeGreaterThanOrEqual(31);
-    expect(d.writes.length).toBeLessThanOrEqual(33);
-    // A still page: the last frame again, about 30 a second (the first after 1.5 frames).
-    const before = d.writes.length;
+    expect(d.writes.length).toBeGreaterThanOrEqual(30);
+    expect(d.writes.length).toBeLessThanOrEqual(32);
+    // A still page: the last frame again, 30 a second.
+    let before = d.writes.length;
     t.advance(1000);
-    expect(d.writes.length - before).toBeGreaterThanOrEqual(14);
+    expect(d.writes.length - before).toBeGreaterThanOrEqual(29);
+    expect(d.writes.length - before).toBeLessThanOrEqual(31);
+    // A page held to 10 frames a second: still 30 a second.
+    before = d.writes.length;
+    for (let i = 0; i < 10; i++) {
+      feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
+      t.advance(100);
+    }
+    expect(d.writes.length - before).toBeGreaterThanOrEqual(29);
     expect(d.writes.length - before).toBeLessThanOrEqual(31);
     expect(d.writes.at(-1)![0]).toBe(16);
-    expect(feed.converted).toBe(31);
+    expect(feed.converted).toBe(41);
     feed.stop();
     expect(d.closed).toBe(true);
     const after = d.writes.length;
@@ -162,7 +170,8 @@ describe('the camera’s writer, against a fake device', () => {
 
   it('keeps the error of a frame of the wrong size or a failed write, and goes on', () => {
     const d = fakeDevice();
-    const feed = new CameraFeed(d, o, fakeTimers());
+    const t = fakeTimers();
+    const feed = new CameraFeed(d, o, t);
     feed.start();
     feed.frame(solid(2, 2, [0, 0, 0, 255]), 2, 2);
     expect(feed.error).toMatch(/2 × 2 for a camera of 4 × 2/);
@@ -176,10 +185,12 @@ describe('the camera’s writer, against a fake device', () => {
     feed.frame(solid(2, 2, [0, 0, 0, 255]), 2, 2);
     d.write = (f) => d.writes.push(f.slice());
     feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
+    // Written at the next tick: the error ends with it.
+    t.advance(1000 / 30);
     expect(feed.error).toBeUndefined();
     d.writes.length = 0;
-    d.write = (f) => d.writes.push(f.slice());
     feed.frame(solid(4, 2, [0, 0, 0, 255]), 4, 2);
+    t.advance(1000 / 30);
     expect(feed.error).toBeUndefined();
     expect(d.writes).toHaveLength(1);
   });

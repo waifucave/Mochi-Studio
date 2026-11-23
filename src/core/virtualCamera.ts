@@ -160,6 +160,11 @@ export interface VirtualCameraState {
   fps: number;
   /** Frames written since it started. */
   frames: number;
+  /**
+   * The page's frames a second, while held below the camera's rate because the app's window
+   * answered slowly (the camera goes on writing at its rate, repeating frames).
+   */
+  heldFps?: number;
   error?: string;
   /**
    * Windows and macOS: the camera other apps list is installed with the app's

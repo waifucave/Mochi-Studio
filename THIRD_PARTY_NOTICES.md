@@ -15,6 +15,9 @@ bundles; a test checks that it is up to date.
   desktop app) is the example model of Mochi Maker's getting-started guide,
   made by Mochi Maker's own code, under the MIT License like Mochi Studio
   (`samples/README.md`).
+- **The app's icon** (`public/icon.svg`, and the PNG, .ico and .icns
+  made from it) is Mochi Studio's own, drawn for the project, under the
+  same MIT License. No third-party art or font is in it.
 
 | Package                                            | Version                                                     | License      | In                                           |
 | -------------------------------------------------- | ----------------------------------------------------------- | ------------ | -------------------------------------------- |

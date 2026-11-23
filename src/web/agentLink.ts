@@ -23,6 +23,7 @@ import {
 } from '../core/bridgeProtocol';
 import { CommandError, type Scope } from '../core/commands/registry';
 import { Emitter } from '../core/events';
+import { APP_VERSION } from '../core/version';
 import { itemFilesOwner, type SyncMessage, type SyncTransport } from '../core/sync';
 import type { BridgeToHostPlugin, HostToBridgePlugin } from '../core/plugins/protocol';
 import type { BridgeToHostPhone, HostToBridgePhone } from '../core/phoneProtocol';
@@ -564,7 +565,7 @@ export class AgentLink {
         type: 'host_hello',
         protocol: PROTOCOL_VERSION,
         app: 'mochi-studio',
-        version: '0.1.0',
+        version: APP_VERSION,
         ...(storage.get(HOST_TOKEN_KEY) ? { hostToken: storage.get(HOST_TOKEN_KEY)! } : {}),
       });
     };

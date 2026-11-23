@@ -7,8 +7,8 @@ The stage fills the window; the controls float over it.
 - **The main menu**: double-click (or double-tap) the stage anywhere outside
   an item, or use the **☰** button at the top left. It has **Change model**,
   **Screenshot**, **Background**, **Items**, **Lock model position**,
-  **Lock items**, **Settings** and **Log**. Esc closes it, and any open
-  sheet.
+  **Lock items**, **Settings**, **Log** and **About**. Esc closes it, and
+  any open sheet.
 - **Change model** opens the model bar at the bottom: the current model,
   recent ones (in the desktop app), **Open folder…** and **Open zip…**.
 - **Settings** opens a sheet on the right with four tabs:
@@ -30,6 +30,8 @@ The stage fills the window; the controls float over it.
   folders, long keys and the query part of addresses are left out of every
   message, and no camera picture ever goes in
   ([Streaming for hours](#streaming-for-hours)).
+- **About** shows the app's version, its license, and where to report a
+  problem.
 - On-screen hotkey buttons run down the right side of the stage.
 - Status chips (camera, microphone, agents, output views, plugins), the
   **Guide** button, and undo and redo sit at the top right.
@@ -91,6 +93,12 @@ not offer it, the stage shows a message saying so, with what to try: turn on
 hardware acceleration in the browser's settings, update the graphics
 drivers, or try another browser (for OBS, make sure Browser Source hardware
 acceleration is on). The settings keep working, but models cannot be shown.
+
+When the graphics driver, or the app's graphics process, restarts, the stage
+loses its graphics context for a moment. The log says "The graphics context
+was lost", drawing pauses, and a model being loaded waits; when the context
+is back ("The graphics context is back."), the model is drawn again and the
+load goes on.
 
 Zips are read by Mochi2D, which also understands file names written in older
 encodings (Chinese, Japanese, Korean). RAR and 7z archives are not supported:
@@ -961,9 +969,7 @@ Each output has these settings:
 - **Fixed size** sends that size (16 to 7680 pixels a side). Without it, the
   output has the stage's size in the window, and follows it when you resize
   the window. A fixed size larger than your screen is drawn at a smaller
-  size and scaled up. On a test machine without a graphics card, such an
-  output stayed empty, and it has not been checked on a real graphics card
-  yet. If it stays empty, pick a size that fits your screen.
+  size and scaled up, at the full size.
 
 **Add an output** adds another sender, **MochiStudio2**, then
 **MochiStudio3** and **MochiStudio4**, each with its own settings: one
@@ -979,6 +985,33 @@ they run on different chips, OBS's Spout2 source stays black.
 
 Agents can switch the outputs too (`set_spout`), and `get_state` shows each
 sender ([agent-api.md](agent-api.md)).
+
+### When the computer can't keep up (desktop app)
+
+Spout2, the virtual camera and web items each draw a page out of sight,
+and on a computer without a graphics card (or with a slow one) a large
+output can take the time the window needs. The window comes first: a few
+times a second, the app checks how quickly the window answers, and how
+late its own work runs. While either is slow, an output's frame rate is
+halved, down to 2 frames a second; still slow at 2, the output pauses
+(Spout2 programs keep its last frame; the camera repeats it). Frames that
+would come sooner are skipped, never kept to send later. An output that
+gets far fewer frames than it may send is brought down to about what it
+gets. When the app answers quickly again, the rate goes back up, step by
+step. Tracking, the window and the other outputs go on as before.
+
+When an output has been held below its rate for a few seconds, the app says
+so once, and its status line says it while it lasts:
+
+- **Spout2:** "Spout2 is sending at N frames a second: this computer can't
+  keep up at this size". A smaller fixed size, or one output instead of
+  several, lets it send more.
+- **Virtual camera:** the call app still gets frames at the camera's rate;
+  the picture changes fewer times a second.
+- **A web item** is shown at fewer frames a second.
+
+A large output also starts at a lower rate and goes up within seconds, so
+that its first moment does not stop the window either.
 
 ### A virtual camera for calls (desktop app)
 

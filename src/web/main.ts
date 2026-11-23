@@ -1,4 +1,5 @@
 import './style.css';
+import { PageLateness } from '../core/pageLateness';
 import { CHROMA_PRESETS, type Background } from '../core/background';
 import { comboLabel } from '../core/hotkeys';
 import type { ItemDepth } from '../core/plugins/itemSort';
@@ -64,7 +65,8 @@ import { lightOverlayPanel } from './lightOverlayUi';
 import { lightStrengthSection } from './lightStrengthUi';
 import { WEB_ITEM_DEFAULTS, WEB_ITEM_MAX_FPS } from '../core/webItems';
 import { AppLog, bugReport, errorText } from '../core/appLog';
-import { APP_VERSION } from '../core/plugins/protocol';
+import { APP_VERSION, REPOSITORY_URL } from '../core/version';
+import { aboutText, showDocument } from './documents';
 import { spoutSection } from './spoutUi';
 import { virtualCameraSection } from './virtualCameraUi';
 import { CollabStage } from './collab/collabStage';
@@ -86,6 +88,10 @@ const studio = new Studio(
   new IdbItemFileStore(),
 );
 (window as unknown as { mochiStudio: Studio }).mochiStudio = studio;
+// How late this window's own timers run (the desktop app's tests read it: src/core/pageLateness.ts).
+const pageLateness = new PageLateness();
+pageLateness.start();
+(window as unknown as { mochiPageLateness: PageLateness }).mochiPageLateness = pageLateness;
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -396,6 +402,13 @@ const mainMenu = h(
   lockItemsBtn,
   menuEntry('settings', 'Settings', () => openSettings(lastSettingsTab())),
   menuEntry('log', 'Log', () => openLog()),
+  menuEntry('about', 'About', () => {
+    closeOverlays();
+    showDocument(
+      'About Mochi Studio',
+      aboutText({ version: APP_VERSION, desktop: !!desktopApi(), repository: REPOSITORY_URL }),
+    );
+  }),
 );
 const menuButton = h(
   'button',

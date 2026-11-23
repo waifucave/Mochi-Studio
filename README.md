@@ -38,6 +38,15 @@ tracking session (`npm run screenshots`).
 
 **How it was made.** Most of this code was written by AI coding agents (Anthropic's Claude) under the direction of the project's maintainer, through the clean-room process in [CLEANROOM.md](CLEANROOM.md). Copyright may not subsist in every part of it. To the extent it does, it is licensed under the MIT License. Either way, it is provided as is, without warranty. Third-party code keeps its own licenses ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
 
+## Download
+
+The desktop app for Linux, Windows and macOS is on the
+[Releases](../../releases) page. Its first versions are pre-releases, and
+the apps are not signed yet: each package comes with a `HOW-TO-OPEN` note
+for its system, and each release's notes say what works on which system.
+To try Mochi Studio without installing the app, run it in the browser
+([Getting started](#getting-started)).
+
 ## Features
 
 - Load a model from a folder, a zip or a URL. Settings are saved per model in
