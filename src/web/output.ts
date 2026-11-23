@@ -109,6 +109,127 @@ let loading: Promise<void> = Promise.resolve();
 let modelReady = false;
 /** The items this view shows, and the version of their files. */
 const itemIds = new Map<string, number>();
+
+/**
+ * The items the control window lists, in its order, each with what this
+ * view loads it from: the files a message carried (kept, as the window
+ * sends an item's files once), or none yet.
+ */
+interface WantedItem {
+  id: string;
+  label: string;
+  visible: boolean;
+  version: number;
+  files?: () => ModelFileSet;
+}
+let wanted: WantedItem[] = [];
+/**
+ * A view that misses a file once (a slow bridge, a busy computer) tries
+ * again: after these pauses, then gives up until it is opened again, and
+ * says so in the control window's log. `?retry=<ms>` sets every pause (for
+ * tests).
+ */
+const RETRY_PAUSES_MS = query.get('retry')
+  ? Array<number>(4).fill(Number(query.get('retry')))
+  : [2000, 5000, 15_000, 30_000];
+const TRIES = RETRY_PAUSES_MS.length + 1;
+/** Failed loads of an item's files (of this version), by id, and when it may try next. */
+const itemTries = new Map<string, { version: number; n: number; at: number }>();
+let itemRetry: ReturnType<typeof setTimeout> | undefined;
+/** The latest item layout, applied again to an item that loads on a later try. */
+let lastLayout: Extract<SyncMessage, { type: 'itemLayout' }>['layout'] | undefined;
+/** Says in the control window's log that this view is behind (not limited like errors). */
+const behind = (text: string, kind: 'info' | 'error' = 'error'): void =>
+  transport.post({ type: 'viewLog', viewId, text, kind });
+const seconds = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
+
+/**
+ * Takes the window's list: an entry without files (the window sent them
+ * before) keeps those this view got for that version.
+ */
+function setWanted(next: WantedItem[]): void {
+  const known = new Map(wanted.map((i) => [i.id, i]));
+  wanted = next.map((i) => {
+    const k = known.get(i.id);
+    return i.files || !k || k.version !== i.version ? i : { ...i, files: k.files };
+  });
+}
+
+/**
+ * Brings this view's items to the window's list: removes those it no
+ * longer lists, loads those it lacks or has other files of. A load that
+ * fails is tried again later; the others go on. Items wait for the model.
+ */
+async function syncItems(): Promise<void> {
+  if (!modelReady) return;
+  const ids = new Set(wanted.map((i) => i.id));
+  for (const id of itemIds.keys())
+    if (!ids.has(id)) {
+      runtime.removeItem(id);
+      itemIds.delete(id);
+    }
+  for (const id of itemTries.keys()) if (!ids.has(id)) itemTries.delete(id);
+  let retryIn: number | undefined;
+  const failed: string[] = [];
+  const gaveUp: string[] = [];
+  const recovered: string[] = [];
+  let askAgain = false;
+  /** The shortest pause of the items that failed now. */
+  let nextPause = Infinity;
+  for (const i of wanted) {
+    // An item this view has, with these files: nothing to load. New files replace its
+    // old ones, which stay drawn until the new ones have loaded.
+    if (itemIds.get(i.id) === i.version || (avatarMode && isCollab(i.id))) continue;
+    const t = itemTries.get(i.id);
+    const n = t?.version === i.version ? t.n : 0;
+    if (n >= TRIES) continue;
+    // Not before its pause is over (another message from the window comes sooner).
+    if (n && t!.at > performance.now()) {
+      retryIn = Math.min(retryIn ?? Infinity, t!.at - performance.now());
+      continue;
+    }
+    try {
+      // No files for it here (a message without them came first): ask the window for all.
+      if (!i.files) throw new Error('its files did not come');
+      await runtime.addItem(i.id, i.files(), { visible: i.visible });
+      itemIds.set(i.id, i.version);
+      if (n) {
+        itemTries.delete(i.id);
+        recovered.push(`“${i.label}” (try ${n + 1})`);
+      }
+    } catch (e) {
+      console.error(e);
+      const pause = RETRY_PAUSES_MS[n] ?? 0;
+      itemTries.set(i.id, { version: i.version, n: n + 1, at: performance.now() + pause });
+      if (n + 1 >= TRIES) {
+        gaveUp.push(`“${i.label}” (${errorText(e)})`);
+        continue;
+      }
+      failed.push(`“${i.label}” (${errorText(e)})`);
+      if (!i.files) askAgain = true;
+      nextPause = Math.min(nextPause, pause);
+      retryIn = Math.min(retryIn ?? pause, pause);
+    }
+  }
+  // One line for the window's log (the bridge passes one a second).
+  const said = [
+    failed.length && `could not load ${failed.join(', ')}; it tries again in ${seconds(nextPause)}`,
+    gaveUp.length &&
+      `gave up loading ${gaveUp.join(', ')} after ${TRIES} tries, and shows the stage without ` +
+        `${gaveUp.length > 1 ? 'them' : 'it'}: open the view again (in OBS, refresh the browser source)`,
+    recovered.length && `has loaded ${recovered.join(', ')} now`,
+  ].filter(Boolean);
+  if (said.length)
+    behind(`An output view ${said.join('; ')}.`, failed.length || gaveUp.length ? 'error' : 'info');
+  if (askAgain) transport.post({ type: 'hello', viewId, ...(avatarMode ? { avatar: true } : {}) });
+  // Placed as the window has it, also when it loaded after the window's layout came.
+  if (recovered.length && lastLayout) runtime.applyItemLayout(lastLayout);
+  document.body.dataset.items = String(itemIds.size);
+  if (retryIn !== undefined) {
+    clearTimeout(itemRetry);
+    itemRetry = setTimeout(() => then(syncItems), retryIn);
+  }
+}
 const params: Record<string, number> = {};
 /** Parameter messages from the control window (for tests: they keep their rate while it is hidden). */
 let paramsReceived = 0;
@@ -117,6 +238,84 @@ let collabFrames = 0;
 const clearParams = (): void => {
   for (const k of Object.keys(params)) delete params[k];
 };
+
+/** Failed loads of the model with this key. */
+let modelTries = { key: '', n: 0 };
+let modelRetry: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Another model. Its parameters come right after it, so the old ones go
+ * now; its items come after it, so the list and the tries go when its load
+ * starts (after what was queued for the old one).
+ */
+function newModel(m: Extract<SyncMessage, { type: 'model' | 'modelRemote' }>): void {
+  loadedKey = m.key;
+  modelReady = false;
+  clearParams();
+  then(() => {
+    wanted = [];
+    itemTries.clear();
+    clearTimeout(itemRetry);
+    clearTimeout(modelRetry);
+    modelTries = { key: m.key, n: 0 };
+    return loadModel(m);
+  });
+}
+
+/**
+ * Loads the model (its files from the message, or from the bridge), then
+ * the items the window listed meanwhile. A load that fails is tried again
+ * later, as an item's is.
+ */
+async function loadModel(
+  m: Extract<SyncMessage, { type: 'model' | 'modelRemote' }>,
+): Promise<void> {
+  for (const id of itemIds.keys()) runtime.removeItem(id);
+  itemIds.clear();
+  const t0 = performance.now();
+  const total = m.type === 'modelRemote' ? (m.sizes?.reduce((a, b) => a + b, 0) ?? 0) : 0;
+  if (m.type === 'modelRemote') status('loading', 0, total, 0);
+  try {
+    if (m.type === 'model') {
+      await runtime.load(await openModel(new MemoryFileSet(m.label, m.files)));
+    } else {
+      const remote = remoteFiles('model', m.key, m.label, m.paths, m.sizes, { t0 });
+      await runtime.load(await openModel(remote.files));
+      await remote.done.catch(() => undefined);
+      loadStats.bytes = total;
+      loadStats.fetchMs = Math.round(remote.fetchMs());
+      loadStats.loadMs = Math.round(performance.now() - t0);
+    }
+  } catch (e) {
+    status('failed', 0, total, performance.now() - t0, (e as Error).message);
+    const n = ++modelTries.n;
+    const why = errorText(e);
+    if (n >= TRIES) {
+      behind(
+        `An output view could not load the model (${why}) after ${TRIES} tries. Open the view ` +
+          `again (in OBS: refresh the browser source).`,
+      );
+    } else {
+      const pause = RETRY_PAUSES_MS[n - 1]!;
+      behind(
+        `An output view could not load the model (${why}). It tries again in ${seconds(pause)} ` +
+          `(try ${n + 1} of ${TRIES}).`,
+      );
+      clearTimeout(modelRetry);
+      modelRetry = setTimeout(() => {
+        if (loadedKey === m.key && !modelReady) then(() => loadModel(m));
+      }, pause);
+    }
+    throw e;
+  }
+  if (modelTries.n)
+    behind(`An output view has loaded the model now (try ${modelTries.n + 1}).`, 'info');
+  modelTries.n = 0;
+  modelReady = true;
+  document.body.dataset.model = m.key;
+  status('ready', total, total, m.type === 'modelRemote' ? performance.now() - t0 : 0);
+  await syncItems();
+}
 
 /** Runs after the model (and items) queued so far are loaded; logs failures. */
 function then(fn: () => void | Promise<void>): void {
@@ -135,74 +334,40 @@ function handle(m: SyncMessage): void {
       // Says it is here, also to a control window that (re)loaded after it said hello: items
       // go only to views the control window knows of.
       if (m.key === loadedKey) return status('ready', 0, 0, 0);
-      loadedKey = m.key;
-      modelReady = false;
-      // The old model's values go now; those that come while this one loads are its own
-      // (the control window sends them once, right after the model), so they stay.
-      clearParams();
-      then(async () => {
-        for (const id of itemIds.keys()) runtime.removeItem(id);
-        itemIds.clear();
-        const model = await openModel(new MemoryFileSet(m.label, m.files));
-        await runtime.load(model);
-        modelReady = true;
-        document.body.dataset.model = m.key;
-        status('ready', 0, 0, 0);
-      });
+      newModel(m);
       break;
     case 'modelRemote':
       if (!bridge || m.key === loadedKey) return;
-      loadedKey = m.key;
-      modelReady = false;
-      clearParams();
-      then(async () => {
-        for (const id of itemIds.keys()) runtime.removeItem(id);
-        itemIds.clear();
-        const t0 = performance.now();
-        const total = m.sizes?.reduce((a, b) => a + b, 0) ?? 0;
-        status('loading', 0, total, 0);
-        try {
-          const remote = remoteFiles('model', m.key, m.label, m.paths, m.sizes, { t0 });
-          const model = await openModel(remote.files);
-          await runtime.load(model);
-          await remote.done.catch(() => undefined);
-          loadStats.bytes = total;
-          loadStats.fetchMs = Math.round(remote.fetchMs());
-          loadStats.loadMs = Math.round(performance.now() - t0);
-          status('ready', total, total, performance.now() - t0);
-        } catch (e) {
-          status('failed', 0, total, performance.now() - t0, (e as Error).message);
-          throw e;
-        }
-        modelReady = true;
-        document.body.dataset.model = m.key;
-      });
+      newModel(m);
       break;
     case 'itemsRemote':
       if (!bridge) return;
-      then(async () => {
-        const wanted = new Set(m.items.map((i) => i.id));
-        for (const id of itemIds.keys())
-          if (!wanted.has(id)) {
-            runtime.removeItem(id);
-            itemIds.delete(id);
-          }
-        for (const i of m.items) {
-          // An item this view has, with these files: nothing to load. New files replace its
-          // old ones, which stay drawn until the new ones have loaded.
-          if (itemIds.get(i.id) === (i.version ?? 0) || (avatarMode && isCollab(i.id))) continue;
-          const owner = itemFilesOwner(i.id, i.version);
-          await runtime.addItem(i.id, remoteFiles('item', owner, i.label, i.paths, i.sizes).files, {
+      then(() => {
+        setWanted(
+          m.items.map((i) => ({
+            id: i.id,
+            label: i.label,
             visible: i.visible,
-          });
-          itemIds.set(i.id, i.version ?? 0);
-        }
-        document.body.dataset.items = String(itemIds.size);
+            version: i.version ?? 0,
+            ...(i.paths.length
+              ? {
+                  files: () =>
+                    remoteFiles('item', itemFilesOwner(i.id, i.version), i.label, i.paths, i.sizes)
+                      .files,
+                }
+              : {}),
+          })),
+        );
+        return syncItems();
       });
       break;
     case 'unload':
       loadedKey = undefined;
       modelReady = false;
+      wanted = [];
+      itemTries.clear();
+      clearTimeout(itemRetry);
+      clearTimeout(modelRetry);
       then(() => {
         for (const id of itemIds.keys()) runtime.removeItem(id);
         itemIds.clear();
@@ -237,22 +402,17 @@ function handle(m: SyncMessage): void {
       then(() => runtime.setItemVisible(m.item, m.visible));
       break;
     case 'items':
-      then(async () => {
-        const wanted = new Set(m.items.map((i) => i.id));
-        for (const id of itemIds.keys())
-          if (!wanted.has(id)) {
-            runtime.removeItem(id);
-            itemIds.delete(id);
-          }
-        for (const i of m.items) {
-          if (itemIds.get(i.id) === (i.version ?? 0) || (avatarMode && isCollab(i.id))) continue;
-          if (!i.files.length) continue;
-          await runtime.addItem(i.id, new MemoryFileSet(i.label, i.files), {
+      then(() => {
+        setWanted(
+          m.items.map((i) => ({
+            id: i.id,
+            label: i.label,
             visible: i.visible,
-          });
-          itemIds.set(i.id, i.version ?? 0);
-        }
-        document.body.dataset.items = String(itemIds.size);
+            version: i.version ?? 0,
+            ...(i.files.length ? { files: () => new MemoryFileSet(i.label, i.files) } : {}),
+          })),
+        );
+        return syncItems();
       });
       break;
     case 'stopMotions':
@@ -266,6 +426,7 @@ function handle(m: SyncMessage): void {
       runtime.setEffect('eyeBlink', m.eyeBlink);
       break;
     case 'itemLayout':
+      lastLayout = m.layout;
       then(() => runtime.applyItemLayout(m.layout));
       break;
     case 'toggles':

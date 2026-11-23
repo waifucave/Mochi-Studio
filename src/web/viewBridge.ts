@@ -74,7 +74,9 @@ export function viewBridgeTransport(o: ViewBridgeOptions): SyncTransport & {
     };
     s.onclose = (e) => {
       if (closed) return;
-      if (e.code === 4401) {
+      // A wrong key. (4408, or 4401 'no view_hello' from an older bridge: this view's hello
+      // came too late, as a busy computer can make it; it connects again.)
+      if (e.code === 4401 && e.reason !== 'no view_hello') {
         o.onStatus?.('The view key is not valid. Copy the address again from Mochi Studio.');
         return;
       }

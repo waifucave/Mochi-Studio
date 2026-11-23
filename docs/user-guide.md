@@ -913,6 +913,14 @@ models work too, and it follows the control window: tracking, lip sync,
 expressions, motions, items, background and position. It never opens the
 camera or microphone.
 
+A view that can't load the model or an item (a file that came too late
+from a busy bridge, say) tries again after 2, 5, 15 and 30 seconds, and
+says so in the control window's **Log**: which item, why, and when it
+tries again. Meanwhile it shows the rest; an item whose new files failed
+keeps its old ones. After five tries it stops and says so; open the view
+again (in OBS, refresh the browser source). New files for the item (a
+plugin changes its brightness, say) are tried again, five times too.
+
 While a view loads a model, the control window draws at 2 frames per second
 (for at most a minute). Pages of one browser share its graphics process, and
 without a graphics card the control window's drawing held a loading view
@@ -1146,7 +1154,8 @@ the light overlay, the voice, tracking and parameters, items, drawing). If
 one fails, the others still run, so the model keeps moving in the window
 and in OBS. The error goes to the **Log** once, with a count while it
 repeats, and pops up once. An output view's errors (in OBS too, through the
-bridge) go to the control window's log, at most one a second. Errors
+bridge) go to the control window's log, at most one a second (three at
+once through the bridge). Errors
 nothing else catches are logged too.
 
 **For a bug report**, open the **Log** and press **Save for a bug report…**.

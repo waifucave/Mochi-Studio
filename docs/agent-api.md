@@ -410,7 +410,8 @@ old one. Mochi Studio puts it in the view's address:
    `{ "type": "view_hello", "protocol": 1, "key": "msv_…", "viewId": "…" }`.
    The bridge answers
    `{ "type": "view_welcome", "protocol": 1, "studio": { "connected" }, "host": { "connected", "app" } }`,
-   or an `unauthorized` error and closes with 4401.
+   or an `unauthorized` error and closes with 4401. A view that sends no
+   `view_hello` in time is closed with 4408 and connects again.
 2. The view sends `{ "type": "sync", "message": { "type": "hello", "viewId" } }`
    when it starts and again whenever `{ "type": "studio", "connected": true }`
    arrives, and `bye` when it closes. Views may send only `hello` and `bye`.

@@ -41,7 +41,7 @@ export type SyncMessage =
       message?: string;
     }
   /** Output -> control: an error in the view, for the window's log. */
-  | { type: 'viewLog'; viewId: string; text: string }
+  | { type: 'viewLog'; viewId: string; text: string; kind?: 'info' | 'error' }
   | { type: 'unload' }
   /** Control -> output: the look of the stage. */
   | { type: 'stage'; background: Background; transform: SceneTransform; fpsCap: number }

@@ -2271,7 +2271,10 @@ export class Studio implements StudioApi {
       return;
     }
     if (m.type === 'viewLog') {
-      this.events.emit('log', { text: m.text.slice(0, 300), kind: 'error' });
+      this.events.emit('log', {
+        text: m.text.slice(0, 300),
+        kind: m.kind === 'info' ? 'info' : 'error',
+      });
       return;
     }
     if (m.type !== 'hello') return;

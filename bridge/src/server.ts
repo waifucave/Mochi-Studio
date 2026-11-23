@@ -44,6 +44,8 @@ export interface BridgeOptions {
   log?: (msg: string) => void;
   /** Seconds a command may take before it fails with `timeout` (speak can take longer). */
   commandTimeoutS?: number;
+  /** Milliseconds a client or view may take to say hello after connecting (default 5000). */
+  helloTimeoutMs?: number;
   /**
    * A folder to serve at /app/ (the built Mochi Studio pages). The desktop
    * app uses it, so its window and OBS's output address load from here.
@@ -128,7 +130,8 @@ export class BridgeServer {
   /** Whether the page lets agents in (its agent access switch). */
   private agentsAllowed = true;
   /** Output views and their view ids. */
-  private views = new Map<WebSocket, { viewId?: string; loggedAt?: number }>();
+  /** Output views, and how many log lines each may still send now (see `viewLog`). */
+  private views = new Map<WebSocket, { viewId?: string; logTokens?: number; loggedAt?: number }>();
   /**
    * Files the page uploaded for output views (`PUT /upload/…`), by
    * `<scope>/<owner>/<path>`. Views read them straight from here; only a
@@ -160,6 +163,7 @@ export class BridgeServer {
       allowOrigins: o.allowOrigins ?? [],
       log: o.log ?? ((m) => process.stderr.write(`[mochi-studio-bridge] ${m}\n`)),
       commandTimeoutS: o.commandTimeoutS ?? 30,
+      helloTimeoutMs: o.helloTimeoutMs ?? HELLO_TIMEOUT_MS,
     };
     this.staticDir = o.staticDir;
     this.plugins = new PluginServer({
@@ -575,7 +579,7 @@ export class BridgeServer {
         );
         ws.close(4401, 'no hello');
       }
-    }, HELLO_TIMEOUT_MS);
+    }, this.opts.helloTimeoutMs);
     ws.on('message', (raw) => {
       const m = parse(raw);
       if (!m)
@@ -774,9 +778,11 @@ export class BridgeServer {
    */
   private onView(ws: WebSocket): void {
     let authed = false;
+    // No hello in time is not a wrong key (on a busy computer the page can be late): 4408,
+    // and the view connects again.
     const helloTimer = setTimeout(() => {
-      if (!authed) ws.close(4401, 'no view_hello');
-    }, HELLO_TIMEOUT_MS);
+      if (!authed) ws.close(4408, 'no view_hello');
+    }, this.opts.helloTimeoutMs);
     ws.on('message', (raw) => {
       const m = parse(raw);
       if (!m) return;
@@ -824,16 +830,24 @@ export class BridgeServer {
           },
         });
       }
-      // A view's errors, for the window's log: short, and at most one a second.
+      // A view's errors, for the window's log: short, and one a second (three at once, as
+      // a view says it loaded the model and could not load an item in the same moment).
       if (msg.type === 'viewLog') {
         const v = this.views.get(ws)!;
         const now = Date.now();
         const text = (m.message as Record<string, unknown>).text;
-        if (typeof text !== 'string' || now - (v.loggedAt ?? 0) < 1000) return;
+        const tokens = Math.min(3, (v.logTokens ?? 3) + (now - (v.loggedAt ?? now)) / 1000);
+        if (typeof text !== 'string' || tokens < 1) return;
+        v.logTokens = tokens - 1;
         v.loggedAt = now;
         return this.sendHost({
           type: 'sync',
-          message: { type: 'viewLog', viewId: msg.viewId, text: text.slice(0, 300) },
+          message: {
+            type: 'viewLog',
+            viewId: msg.viewId,
+            text: text.slice(0, 300),
+            ...((m.message as Record<string, unknown>).kind === 'info' ? { kind: 'info' } : {}),
+          },
         });
       }
       if (msg.type !== 'hello' && msg.type !== 'bye') return;
