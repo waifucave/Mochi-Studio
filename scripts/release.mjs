@@ -149,6 +149,14 @@ export function releaseStart(env, dir = root) {
   const version = packageVersion(dir);
   if (env.GITHUB_EVENT_NAME === 'push' && (env.GITHUB_REF ?? '').startsWith('refs/tags/'))
     return { how: 'tag', tag: env.GITHUB_REF.slice('refs/tags/'.length), version };
+  // A rehearsal (by hand, private repositories only): the whole path with a throwaway tag.
+  if (env.GITHUB_EVENT_NAME === 'workflow_dispatch' && env.REHEARSAL === 'true')
+    return {
+      how: 'rehearsal',
+      tag: `rehearsal-${env.GITHUB_RUN_NUMBER}`,
+      version,
+      withRelease: env.RELEASE === 'true',
+    };
   if (env.GITHUB_EVENT_NAME === 'workflow_dispatch' && env.RELEASE === 'true')
     return { how: 'dispatch', tag: `v${version}`, version };
   return { how: undefined, tag: `v${version}`, version };
@@ -202,6 +210,10 @@ export function gitHub({ api, repository, token, fetch: f = globalThis.fetch }) 
         'application/octet-stream',
       ),
     assets: (id) => call('GET', `/releases/${id}/assets?per_page=100`),
+    /** The repository (whether it is private). */
+    repository: () => call('GET', ''),
+    release: (id) => call('GET', `/releases/${id}`),
+    removeTag: (tag) => call('DELETE', `/git/refs/tags/${encodeURIComponent(tag)}`),
     publish: (id) => call('PATCH', `/releases/${id}`, { draft: false }),
     remove: (id) => call('DELETE', `/releases/${id}`),
   };
@@ -214,18 +226,30 @@ export function gitHub({ api, repository, token, fetch: f = globalThis.fetch }) 
  */
 export async function gate(start, { ref, sha, only }, gh, ours, dir = root) {
   const { how, tag } = start;
-  const problems = checkRelease(tag, dir);
-  if (how === 'dispatch') {
-    if (ref !== 'refs/heads/main')
+  // A rehearsal's tag is its own; the version's changelog and notes are checked all the same.
+  const problems = checkRelease(how === 'rehearsal' ? `v${start.version}` : tag, dir);
+  if (how === 'dispatch' && ref !== 'refs/heads/main')
+    problems.push(
+      `A release is made from the branch main; this run is on ${ref}. Run the workflow on main.`,
+    );
+  if ((how === 'dispatch' || how === 'rehearsal') && only && only !== 'all')
+    problems.push(`A release runs every job: choose "all", not "${only}".`);
+  if (how === 'rehearsal') {
+    if (start.withRelease)
+      problems.push('A rehearsal is not a release: check release or rehearsal, not both.');
+    if (!isRehearsalTag(tag)) problems.push(`${tag} is not a rehearsal's tag (rehearsal-<run>).`);
+    const repo = await gh.repository().catch(() => undefined);
+    if (repo?.private !== true)
       problems.push(
-        `A release is made from the branch main; this run is on ${ref}. Run the workflow on main.`,
+        repo
+          ? 'A rehearsal is made only in a private repository; this one is public.'
+          : 'A rehearsal is made only in a private repository; this one could not be read.',
       );
-    if (only && only !== 'all')
-      problems.push(`A release runs every job: choose "all", not "${only}".`);
   }
   const at = await gh.tagCommit(tag);
   if (how === 'dispatch' && at)
     problems.push(`The tag ${tag} exists already (at ${at}): this version has been released.`);
+  if (how === 'rehearsal' && at) problems.push(`The tag ${tag} exists already (at ${at}).`);
   if (how === 'tag' && at !== sha)
     problems.push(`The tag ${tag} points at ${at ?? 'nothing'}, not at this run's commit ${sha}.`);
   for (const r of await gh.releasesFor(tag)) {
@@ -262,11 +286,50 @@ export function checkAssets(files, assets) {
 }
 
 /**
+ * Publishes the draft, and says whether it is published: the PATCH is tried up to `tries` times,
+ * and after each failure the release is read again, because a PATCH that failed here (a timeout,
+ * a dropped connection) may have taken effect on GitHub.
+ */
+async function publishDraft(
+  gh,
+  id,
+  log,
+  { tries = 3, wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {},
+) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await gh.publish(id);
+      return;
+    } catch (e) {
+      const now = await gh.release(id).catch(() => undefined);
+      if (now && now.draft === false) {
+        log(`The publishing call failed (${e.message ?? e}), but the release is published.`);
+        return;
+      }
+      if (attempt >= tries) throw e;
+      log(`The publishing call failed (${e.message ?? e}); the release is still a draft: again.`);
+      await wait(2000 * attempt);
+    }
+  }
+}
+
+/**
  * Makes the release: the gate, a draft with every file, the files checked, the gate again,
  * then the draft published (which creates the tag at `sha` when there is none). Whatever fails
- * before it is published, the draft is deleted: no tag and no public release are left.
+ * before it is published, the draft is deleted: no tag and no public release are left. A
+ * release is deleted only when it is read again and is still a draft: a published one (a
+ * publishing call that took effect, then failed here) is never deleted; the run goes on to
+ * check it (its tag and its files) and reports.
  */
-export async function publishRelease(start, run, files, { title, notes }, gh, log = console.log) {
+export async function publishRelease(
+  start,
+  run,
+  files,
+  { title, notes },
+  gh,
+  log = console.log,
+  retry = {},
+) {
   const fail = (problems) => {
     const e = new Error(problems.join('\n'));
     e.problems = problems;
@@ -288,21 +351,98 @@ export async function publishRelease(start, run, files, { title, notes }, gh, lo
       log(`${f.name}: ${f.size} bytes sent.`);
     }
     problems = checkAssets(files, (await gh.assets(draft.id)) ?? []);
-    problems.push(...(await gate(start, run, gh, draft.id)));
+    if (!problems.length)
+      log(`Checked on the draft: ${files.length} files, names, sizes and digests.`);
+    const again = await gate(start, run, gh, draft.id);
+    if (!again.length) log('The gate again: nothing in the way.');
+    problems.push(...again);
     if (problems.length) throw fail(problems);
-    await gh.publish(draft.id);
+    await publishDraft(gh, draft.id, log, retry);
+    log(`Published ${draft.id}.`);
   } catch (e) {
-    log(`Not published: the draft is deleted.`);
-    await gh.remove(draft.id).catch((d) => log(`The draft ${draft.id} could not be deleted: ${d}`));
-    throw e;
+    e.release = draft;
+    // Read it again before deleting anything: only a draft is deleted.
+    const now = await gh.release(draft.id).catch(() => undefined);
+    if (now?.draft === true) {
+      log('Not published: the draft is deleted.');
+      await gh
+        .remove(draft.id)
+        .catch((d) => log(`The draft ${draft.id} could not be deleted: ${d}`));
+      throw e;
+    }
+    if (!now) {
+      log(
+        `Not published, and the release ${draft.id} could not be read again: nothing is deleted.`,
+      );
+      throw e;
+    }
+    // Published after all: its checks below say whether it is whole; nothing is deleted.
+    log(`An error after the release was published (${e.message ?? e}): nothing is deleted.`);
   }
+  problems = [];
   const at = await gh.tagCommit(start.tag);
   if (at !== run.sha)
-    throw fail([
+    problems.push(
       `Published, but the tag ${start.tag} points at ${at ?? 'nothing'}, not ${run.sha}.`,
-    ]);
-  log(`Published ${start.tag} at ${run.sha}.`);
+    );
+  problems.push(
+    ...checkAssets(files, (await gh.assets(draft.id)) ?? []).map((p) => `Published, but ${p}`),
+  );
+  if (problems.length) throw Object.assign(fail(problems), { release: draft });
+  log(`Verified: the tag ${start.tag} at ${run.sha}, and its ${files.length} files.`);
   return draft;
+}
+
+/** A rehearsal's tag: rehearsal-<run number>, never a version's. */
+export function isRehearsalTag(tag) {
+  return /^rehearsal-\d+$/.test(tag ?? '');
+}
+
+/**
+ * Removes what a rehearsal made, and checks that nothing of it is left. The one place a published
+ * release is deleted, so it is narrow: only this run's rehearsal (the tag rehearsal-<this run's
+ * number>), the release by the id this run created, and the tag only when it points at this
+ * run's commit (the gate made sure it did not exist before). It never touches v<version>.
+ */
+export async function removeRehearsal(start, run, made, gh, log = console.log, retry = {}) {
+  const wait = retry.wait ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const tag = `rehearsal-${run.runNumber}`;
+  if (start.how !== 'rehearsal' || start.tag !== tag || !isRehearsalTag(tag))
+    throw new Error(`${start.tag} is not this run's rehearsal (${tag}): nothing is removed.`);
+  const problems = [];
+  if (made) {
+    const now = await gh.release(made.id);
+    if (now && (now.id !== made.id || now.tag_name !== tag))
+      throw new Error(
+        `The release ${made.id} is for ${now.tag_name}, not ${tag}: it is not removed.`,
+      );
+    if (now) {
+      await gh.remove(now.id);
+      log(`Deleted the rehearsal's release ${now.id} (${tag}).`);
+    }
+  }
+  const at = await gh.tagCommit(tag);
+  if (at && at !== run.sha)
+    problems.push(`The tag ${tag} points at ${at}, not this run's commit: it is not removed.`);
+  else if (at) {
+    await gh.removeTag(tag);
+    log(`Deleted the tag ${tag}.`);
+  }
+  // Nothing left: no release, no draft, no tag of that name (read again a few times).
+  for (let attempt = 1; ; attempt++) {
+    const left = [];
+    if ((await gh.releasesFor(tag)).length)
+      left.push(`A release or draft for ${tag} is still there.`);
+    if (await gh.tagCommit(tag)) left.push(`The tag ${tag} is still there.`);
+    if (!left.length) break;
+    if (attempt >= 3) {
+      problems.push(...left);
+      break;
+    }
+    await wait(2000 * attempt);
+  }
+  if (problems.length) throw Object.assign(new Error(problems.join('\n')), { problems });
+  log(`Nothing of the rehearsal is left: no release, no draft, no tag ${tag}.`);
 }
 
 /** The files in `dir` to release, each with its size and SHA-256. */
@@ -323,7 +463,12 @@ export function releaseFiles(dir) {
 
 /** The run's facts, from the workflow's environment. */
 function runFacts(env) {
-  return { ref: env.GITHUB_REF, sha: env.GITHUB_SHA, only: env.ONLY };
+  return {
+    ref: env.GITHUB_REF,
+    sha: env.GITHUB_SHA,
+    only: env.ONLY,
+    runNumber: env.GITHUB_RUN_NUMBER,
+  };
 }
 
 function client(env) {
@@ -371,7 +516,10 @@ async function mainAsync([command, ...rest]) {
   const out = (lines) => env.GITHUB_OUTPUT && appendFileSync(env.GITHUB_OUTPUT, lines);
   try {
     if (command === 'gate') {
-      out(`release=${start.how ? 'true' : 'false'}\ntag=${start.tag}\n`);
+      out(
+        `release=${start.how ? 'true' : 'false'}\ntag=${start.tag}\n` +
+          `version_tag=v${start.version}\nrehearsal=${start.how === 'rehearsal'}\n`,
+      );
       if (!start.how) {
         console.log('No release asked for: nothing is published.');
         return;
@@ -379,7 +527,9 @@ async function mainAsync([command, ...rest]) {
       const problems = await gate(start, runFacts(env), client(env));
       if (problems.length) throw Object.assign(new Error(problems.join('\n')), { problems });
       console.log(
-        `${start.tag} may be released (started by ${start.how === 'tag' ? 'its tag' : 'hand'}).`,
+        start.how === 'rehearsal'
+          ? `${start.tag} may be rehearsed (a private repository; v${start.version} is not touched).`
+          : `${start.tag} may be released (started by ${start.how === 'tag' ? 'its tag' : 'hand'}).`,
       );
       return;
     }
@@ -387,16 +537,40 @@ async function mainAsync([command, ...rest]) {
       const [dir, notes] = rest;
       if (!start.how) throw new Error('No release asked for.');
       const version = start.version;
-      await publishRelease(
-        start,
-        runFacts(env),
-        releaseFiles(dir),
-        {
-          title: `Mochi Studio ${version} (pre-release, unsigned)`,
-          notes: readFileSync(notes, 'utf8'),
-        },
-        client(env),
-      );
+      const rehearsal = start.how === 'rehearsal';
+      const text = readFileSync(notes, 'utf8');
+      const gh = client(env);
+      let made;
+      let error;
+      try {
+        made = await publishRelease(
+          start,
+          runFacts(env),
+          releaseFiles(dir),
+          rehearsal
+            ? {
+                title: `REHEARSAL ${start.tag}: Mochi Studio ${version} (pre-release, unsigned)`,
+                notes: `**REHEARSAL** of the release path: this pre-release and its tag ${start.tag} are removed at the end of the run.\n\n${text}`,
+              }
+            : { title: `Mochi Studio ${version} (pre-release, unsigned)`, notes: text },
+          gh,
+        );
+      } catch (e) {
+        error = e;
+        made = e.release;
+      }
+      if (rehearsal) {
+        try {
+          await removeRehearsal(start, runFacts(env), made, gh);
+        } catch (c) {
+          const problems = [
+            ...(error?.problems ?? (error ? [String(error.message)] : [])),
+            ...(c.problems ?? [String(c.message)]),
+          ];
+          error = Object.assign(new Error(problems.join('\n')), { problems });
+        }
+      }
+      if (error) throw error;
       return;
     }
   } catch (e) {

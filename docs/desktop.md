@@ -181,13 +181,27 @@ its runner (`scripts/smoke-package.mjs`).
   there, and makes the release as a draft with every file; it checks each
   file's size and digest on the draft, runs the gate again, and only then
   publishes it, which creates the tag. Whatever fails before that, the
-  draft is deleted: no tag and no public release are left. If a run ends
+  draft is deleted: no tag and no public release are left. The release is
+  read again before anything is deleted, and only a draft is: when the
+  publishing call fails, it is tried again while the release is still a
+  draft, and a release that was published (the call took effect, then
+  failed on the way back) is never deleted; its tag and files are
+  checked, and the run says what is wrong. If a run ends
   in the middle (a cancelled run), a draft may be left; the next run's
   gate names it, to delete on the Releases page.
 
   The tag a release from the Actions page creates comes from the
   workflow's own token, so it starts no other run: there is no second run
   for that tag.
+
+- **A rehearsal** of the release, in a private repository only (a fork or
+  a private copy): Run workflow with **rehearsal** checked (not with
+  **release**). It runs every job and the same release steps, with a
+  throwaway tag `rehearsal-<run number>` at the run's commit and a title
+  that starts with REHEARSAL; then it deletes that release and its tag,
+  and checks that nothing of it is left. It never creates, replaces or
+  deletes the version's own tag or release. Use it after changing the
+  release path, before the next version.
 
 ## Building it yourself
 

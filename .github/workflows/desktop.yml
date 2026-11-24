@@ -15,6 +15,11 @@
 # other job has passed, and checks the same again just before publishing.
 # The tag the release job creates comes from the workflow's own token, which
 # starts no other run: no second run from that tag.
+#
+# A rehearsal (by hand, `rehearsal` checked, in a private repository only)
+# runs the same jobs and the same release calls with a throwaway tag,
+# rehearsal-<run number>, then deletes that release and its tag and checks
+# that nothing is left. It never touches v<version> or its release.
 name: Desktop packages
 
 on:
@@ -27,6 +32,10 @@ on:
         default: all
       release:
         description: 'Make the release v<version> with its tag, at this commit (on main only; every job must pass)'
+        type: boolean
+        default: false
+      rehearsal:
+        description: 'Rehearse the release with a throwaway tag rehearsal-<run>, then remove it (private repositories only; not with release)'
         type: boolean
         default: false
   push:
@@ -47,9 +56,11 @@ jobs:
     outputs:
       release: ${{ steps.gate.outputs.release }}
       tag: ${{ steps.gate.outputs.tag }}
+      version_tag: ${{ steps.gate.outputs.version_tag }}
+      rehearsal: ${{ steps.gate.outputs.rehearsal }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: The gate
@@ -57,6 +68,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release }}
+          REHEARSAL: ${{ inputs.rehearsal }}
           ONLY: ${{ inputs.only }}
         run: node scripts/release.mjs gate
 
@@ -84,8 +96,8 @@ jobs:
               desktop/dist/release/HOW-TO-OPEN-macos.txt
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -184,7 +196,7 @@ jobs:
           for f in *.AppImage *.zip HOW-TO-OPEN-*.txt; do
             [ -f "$f" ] && echo "$f: $(wc -c < "$f") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mochi-studio-${{ matrix.name }}
           path: ${{ matrix.files }}
@@ -199,8 +211,8 @@ jobs:
     if: inputs.only != 'vcam'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -212,7 +224,7 @@ jobs:
         run: npx vitest run --project browser test/browser/spout.test.ts
         env:
           MOCHI_SPOUT_TEST: '1'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: spout-test-results
@@ -230,8 +242,8 @@ jobs:
     if: inputs.only != 'spout'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -297,25 +309,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: mochi-studio-*
           path: artifacts
       - name: Every package and note is there
         run: >-
-          node scripts/release.mjs stage "${{ needs.gate.outputs.tag }}" artifacts release
+          node scripts/release.mjs stage "${{ needs.gate.outputs.version_tag }}" artifacts release
           release-notes.md "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
       - name: Publish the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release }}
+          REHEARSAL: ${{ inputs.rehearsal }}
           ONLY: ${{ inputs.only }}
         run: node scripts/release.mjs publish release release-notes.md
+      # (A rehearsal's release is gone by now: its log above says what it made and removed.)
       - name: The release
+        if: needs.gate.outputs.rehearsal != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
