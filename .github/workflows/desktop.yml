@@ -3,10 +3,18 @@
 # by hand (Actions → Desktop packages → Run workflow) or by a version tag,
 # never by an ordinary push: macOS runners cost the most minutes.
 #
-# Run by hand, it publishes nothing. On a version tag (v + package.json's
-# version), the release job then publishes a pre-release with the packages,
-# once every other job has passed (scripts/release.mjs checks the tag, the
-# changelog, the notes and the packages first).
+# Run by hand, it publishes nothing, unless `release` is checked. A release
+# starts in one of two ways, which share every step (scripts/release.mjs):
+#
+#   - by hand, on main, with `release` checked: the release is made with its
+#     tag, v + package.json's version, at the commit the run is on;
+#   - by a version tag pushed by hand: the release is made for that tag.
+#
+# The gate job checks first, before anything is built, that the release may
+# be made (scripts/release.mjs gate); the release job makes it once every
+# other job has passed, and checks the same again just before publishing.
+# The tag the release job creates comes from the workflow's own token, which
+# starts no other run: no second run from that tag.
 name: Desktop packages
 
 on:
@@ -17,6 +25,10 @@ on:
         type: choice
         options: [all, spout, vcam]
         default: all
+      release:
+        description: 'Make the release v<version> with its tag, at this commit (on main only; every job must pass)'
+        type: boolean
+        default: false
   push:
     tags: ['v*']
 
@@ -24,7 +36,32 @@ permissions:
   contents: read
 
 jobs:
+  # Whether this run makes a release, and if it does, that it may: on main (by hand) or at its
+  # tag's commit (a tag), the version's tag and release not there yet (drafts included), the
+  # changelog and the notes in place. Run by hand without `release`, it checks nothing.
+  gate:
+    runs-on: ubuntu-latest
+    # Write: only to see draft releases (GitHub shows drafts to writers only). It writes nothing.
+    permissions:
+      contents: write
+    outputs:
+      release: ${{ steps.gate.outputs.release }}
+      tag: ${{ steps.gate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          ONLY: ${{ inputs.only }}
+        run: node scripts/release.mjs gate
+
   package:
+    needs: gate
     if: inputs.only != 'spout' && inputs.only != 'vcam'
     strategy:
       fail-fast: false
@@ -158,6 +195,7 @@ jobs:
   # which a Spout2 receiver reads the app's senders back, and measures the
   # cost of both frame paths (test-results/spout-cost.json).
   spout:
+    needs: gate
     if: inputs.only != 'vcam'
     runs-on: windows-latest
     steps:
@@ -188,6 +226,7 @@ jobs:
   # can't load on the runner's kernel, the real-device test is skipped and
   # says why; the step below writes what happened to the job summary.
   vcam:
+    needs: gate
     if: inputs.only != 'spout'
     runs-on: ubuntu-latest
     steps:
@@ -241,14 +280,20 @@ jobs:
           MOCHI_DESKTOP_TEST: '1'
           MOCHI_VCAM_TEST: '1'
 
-  # On a version tag only: the pre-release, once every package and test job has passed.
-  # The only job that may write to the repository. scripts/release.mjs checks, before anything
-  # is published, that the tag is v + package.json's version, that CHANGELOG.md has a section
-  # for it and docs/releases/ its notes, and that every package and note is there.
+  # The release (when the gate said so), once every package and test job has passed. The only
+  # job that writes to the repository. scripts/release.mjs stage checks that every package and
+  # note is there; publish makes a draft with every file, checks each file's size and digest on
+  # it, runs the gate again, and only then publishes it, which creates the tag at the run's
+  # commit (a tag's run: the tag is there already). Whatever fails first, the draft is deleted:
+  # no tag and no public release are left.
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [package, spout, vcam]
+    if: needs.gate.outputs.release == 'true'
+    needs: [gate, package, spout, vcam]
     runs-on: ubuntu-latest
+    # One release at a time.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -256,22 +301,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: The tag, the version, the changelog and the notes agree
-        run: node scripts/release.mjs check "$GITHUB_REF_NAME"
       - uses: actions/download-artifact@v4
         with:
           pattern: mochi-studio-*
           path: artifacts
       - name: Every package and note is there
         run: >-
-          node scripts/release.mjs stage "$GITHUB_REF_NAME" artifacts release release-notes.md
-          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          node scripts/release.mjs stage "${{ needs.gate.outputs.tag }}" artifacts release
+          release-notes.md "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
       - name: Publish the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+          ONLY: ${{ inputs.only }}
+        run: node scripts/release.mjs publish release release-notes.md
+      - name: The release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(node -p "require('./package.json').version")
-          gh release create "$GITHUB_REF_NAME" release/* \
-            --verify-tag --prerelease \
-            --title "Mochi Studio $version (pre-release, unsigned)" \
-            --notes-file release-notes.md
+          tag="${{ needs.gate.outputs.tag }}"
+          gh release view "$tag" --json name,isPrerelease,isDraft,url,assets \
+            --jq '"\(.name) (pre-release: \(.isPrerelease), draft: \(.isDraft))\n\(.url)\n" + ([.assets[] | "\(.name): \(.size) bytes, \(.digest // "no digest")"] | join("\n"))' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Tag $tag: $(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .object.sha) (this run: $GITHUB_SHA)" | tee -a "$GITHUB_STEP_SUMMARY"

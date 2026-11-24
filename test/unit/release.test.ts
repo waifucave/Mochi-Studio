@@ -1,14 +1,20 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  checkAssets,
   checkRelease,
   expectedFiles,
   findFiles,
+  gate,
+  gitHub,
   hasChangelogSection,
   packageVersion,
+  publishRelease,
   releaseNotes,
+  releaseStart,
   // @ts-expect-error: a plain JavaScript module, without types.
 } from '../../scripts/release.mjs';
 
@@ -117,5 +123,286 @@ describe('the release checks', () => {
     expect(notes).toContain('https://github.com/example/mochi-studio/issues');
     expect(notes).toContain('https://github.com/example/mochi-studio/security/advisories/new');
     expect(notes).not.toContain('<!--');
+  });
+});
+
+/**
+ * A GitHub that keeps tags and releases as GitHub does: a draft has no tag;
+ * publishing it creates the tag at its target commit, unless the tag exists.
+ */
+function fakeGitHub(o: { tags?: Record<string, string>; failUpload?: string } = {}) {
+  const tags = new Map(Object.entries(o.tags ?? {}));
+  const releases: any[] = [];
+  const calls: string[] = [];
+  let next = 1;
+  const gh = {
+    tags,
+    releases,
+    calls,
+    async tagCommit(tag: string) {
+      calls.push(`tag ${tag}`);
+      return tags.get(tag);
+    },
+    async releasesFor(tag: string) {
+      return releases.filter((r) => r.tag_name === tag);
+    },
+    async createDraft(r: any) {
+      calls.push('create draft');
+      const rel = { ...r, id: next++, draft: true, assets: [] as any[], html_url: 'https://x/r' };
+      releases.push(rel);
+      return rel;
+    },
+    async upload(rel: any, name: string, bytes: Buffer) {
+      if (name === o.failUpload) throw new Error(`upload ${name}: 500`);
+      rel.assets.push({ name, size: bytes.length, state: 'uploaded', digest: sha(bytes) });
+    },
+    async assets(id: number) {
+      return releases.find((r) => r.id === id)?.assets;
+    },
+    async publish(id: number) {
+      calls.push('publish');
+      const r = releases.find((x) => x.id === id);
+      r.draft = false;
+      if (!tags.has(r.tag_name)) tags.set(r.tag_name, r.target_commitish);
+    },
+    async remove(id: number) {
+      calls.push('delete draft');
+      releases.splice(
+        releases.findIndex((r) => r.id === id),
+        1,
+      );
+    },
+  };
+  return gh;
+}
+const sha = (b: Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
+const file = (name: string, text: string) => {
+  const bytes = Buffer.from(text);
+  return {
+    name,
+    size: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    bytes: () => bytes,
+  };
+};
+const files = () => (expectedFiles(version) as string[]).map((n) => file(n, `${n} bytes`));
+const byHand = { how: 'dispatch', tag: `v${version}`, version };
+const byTag = { how: 'tag', tag: `v${version}`, version };
+const onMain = { ref: 'refs/heads/main', sha: 'c0ffee', only: 'all' };
+const text = { title: 'Mochi Studio', notes: 'Notes.' };
+const quiet = () => undefined;
+
+describe('the start of a release', () => {
+  it('is a pushed tag, or a run by hand with release checked; else none', () => {
+    const tag = releaseStart({ GITHUB_EVENT_NAME: 'push', GITHUB_REF: `refs/tags/v${version}` });
+    expect(tag).toMatchObject({ how: 'tag', tag: `v${version}` });
+    expect(releaseStart({ GITHUB_EVENT_NAME: 'workflow_dispatch', RELEASE: 'true' })).toMatchObject(
+      { how: 'dispatch', tag: `v${version}` },
+    );
+    expect(releaseStart({ GITHUB_EVENT_NAME: 'workflow_dispatch', RELEASE: 'false' }).how).toBe(
+      undefined,
+    );
+    expect(releaseStart({ GITHUB_EVENT_NAME: 'workflow_dispatch' }).how).toBe(undefined);
+  });
+});
+
+describe('the gate', () => {
+  it('lets a run by hand on main through when there is no tag and no release', async () => {
+    expect(await gate(byHand, onMain, fakeGitHub())).toEqual([]);
+  });
+
+  it('stops a run by hand off main, or for only part of the jobs', async () => {
+    const problems = await gate(
+      byHand,
+      { ref: 'refs/heads/other', sha: 'c0ffee', only: 'spout' },
+      fakeGitHub(),
+    );
+    expect(problems).toEqual([
+      'A release is made from the branch main; this run is on refs/heads/other. Run the workflow on main.',
+      'A release runs every job: choose "all", not "spout".',
+    ]);
+    expect(
+      await gate(byHand, { ...onMain, ref: `refs/tags/v${version}` }, fakeGitHub()),
+    ).toHaveLength(1);
+  });
+
+  it('stops when the tag or a release exists, a draft included', async () => {
+    const gh = fakeGitHub({ tags: { [`v${version}`]: 'abc' } });
+    gh.releases.push({ id: 7, tag_name: `v${version}`, draft: false, html_url: 'https://x/7' });
+    gh.releases.push({ id: 8, tag_name: `v${version}`, draft: true, html_url: 'https://x/8' });
+    expect(await gate(byHand, onMain, gh)).toEqual([
+      `The tag v${version} exists already (at abc): this version has been released.`,
+      `The release v${version} exists (https://x/7).`,
+      `A draft release for v${version} exists (https://x/8), maybe from a failed run: delete it on the Releases page, then run again.`,
+    ]);
+  });
+
+  it("lets a tag's run through when its tag is at the run's commit", async () => {
+    const run = { ref: `refs/tags/v${version}`, sha: 'c0ffee', only: '' };
+    expect(await gate(byTag, run, fakeGitHub({ tags: { [`v${version}`]: 'c0ffee' } }))).toEqual([]);
+    expect(await gate(byTag, run, fakeGitHub({ tags: { [`v${version}`]: 'beef' } }))).toEqual([
+      `The tag v${version} points at beef, not at this run's commit c0ffee.`,
+    ]);
+  });
+
+  it('checks the version, the changelog and the notes, as before', async () => {
+    expect(await gate({ ...byHand, tag: 'v9.9.9' }, onMain, fakeGitHub())).toContain(
+      `The tag is v9.9.9, but package.json's version is ${version} (the tag must be v${version}).`,
+    );
+  });
+});
+
+describe('making the release', () => {
+  it('by hand: a draft with every file checked, then published; the tag comes with it', async () => {
+    const gh = fakeGitHub();
+    await publishRelease(byHand, onMain, files(), text, gh, quiet);
+    const [r] = gh.releases;
+    expect(r).toMatchObject({ tag_name: `v${version}`, target_commitish: 'c0ffee', draft: false });
+    expect(r.prerelease).toBe(true);
+    expect(r.assets.map((a: any) => a.name)).toEqual(expectedFiles(version));
+    expect(gh.tags.get(`v${version}`)).toBe('c0ffee');
+    // The gate ran again between the draft and the publish.
+    expect(gh.calls).toEqual([
+      `tag v${version}`,
+      'create draft',
+      `tag v${version}`,
+      'publish',
+      `tag v${version}`,
+    ]);
+  });
+
+  it('by a tag: the same calls, with the tag already there', async () => {
+    const gh = fakeGitHub({ tags: { [`v${version}`]: 'c0ffee' } });
+    await publishRelease(
+      byTag,
+      { ...onMain, ref: `refs/tags/v${version}` },
+      files(),
+      text,
+      gh,
+      quiet,
+    );
+    expect(gh.releases[0].draft).toBe(false);
+    expect(gh.calls).toEqual([
+      `tag v${version}`,
+      'create draft',
+      `tag v${version}`,
+      'publish',
+      `tag v${version}`,
+    ]);
+  });
+
+  it('leaves no tag and no release when an upload fails', async () => {
+    const gh = fakeGitHub({ failUpload: expectedFiles(version)[1] });
+    await expect(publishRelease(byHand, onMain, files(), text, gh, quiet)).rejects.toThrow('500');
+    expect(gh.releases).toEqual([]);
+    expect(gh.tags.size).toBe(0);
+    expect(gh.calls).toContain('delete draft');
+    expect(gh.calls).not.toContain('publish');
+  });
+
+  it('leaves no tag and no release when the gate fails the second time', async () => {
+    const gh = fakeGitHub();
+    // Someone made the tag while the files went up.
+    const upload = gh.upload.bind(gh);
+    gh.upload = async (rel: any, name: string, bytes: Buffer) => {
+      gh.tags.set(`v${version}`, 'beef');
+      return upload(rel, name, bytes);
+    };
+    await expect(publishRelease(byHand, onMain, files(), text, gh, quiet)).rejects.toThrow(
+      'exists already',
+    );
+    expect(gh.releases).toEqual([]);
+    expect(gh.calls).not.toContain('publish');
+  });
+
+  it('does not start when the release exists (a second run)', async () => {
+    const gh = fakeGitHub();
+    await publishRelease(byHand, onMain, files(), text, gh, quiet);
+    await expect(publishRelease(byHand, onMain, files(), text, gh, quiet)).rejects.toThrow(
+      `The release v${version} exists`,
+    );
+    expect(gh.releases).toHaveLength(1);
+  });
+
+  it("checks each file's name, size and digest on the draft", () => {
+    const [a, b] = [file('a', 'aaa'), file('b', 'bb')];
+    expect(
+      checkAssets(
+        [a, b],
+        [
+          { name: 'a', size: 3, state: 'uploaded', digest: `sha256:${a.sha256}` },
+          { name: 'b', size: 1, state: 'uploaded', digest: 'sha256:00' },
+          { name: 'c', size: 1, state: 'uploaded' },
+        ],
+      ),
+    ).toEqual([
+      'b is 1 bytes on the draft, 2 here.',
+      `b's digest on the draft is sha256:00, here sha256:${b.sha256}.`,
+      'c should not be on the draft.',
+    ]);
+    expect(checkAssets([a], [])).toEqual(['a is not on the draft.']);
+  });
+});
+
+describe("the calls to GitHub's REST API", () => {
+  it('follow an annotated tag, read a 404 as none, and send files to the upload address', async () => {
+    const seen: Array<[string, string]> = [];
+    const answers: Record<string, [number, unknown]> = {
+      'GET https://api.test/repos/o/r/git/ref/tags/v1': [
+        200,
+        { object: { type: 'tag', sha: 't1' } },
+      ],
+      'GET https://api.test/repos/o/r/git/tags/t1': [
+        200,
+        { object: { type: 'commit', sha: 'c1' } },
+      ],
+      'GET https://api.test/repos/o/r/git/ref/tags/v2': [404, {}],
+      'POST https://uploads.test/repos/o/r/releases/5/assets?name=a%20b.zip': [201, { id: 1 }],
+      'PATCH https://api.test/repos/o/r/releases/5': [500, 'no'],
+    };
+    const fetch = async (url: string, init: any) => {
+      seen.push([init.method, init.headers['content-type'] ?? '']);
+      const [status, body] = answers[`${init.method} ${url}`] ?? [418, {}];
+      return {
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => body,
+        text: async () => String(body),
+      };
+    };
+    const gh = gitHub({ api: 'https://api.test', repository: 'o/r', token: 't', fetch });
+    expect(await gh.tagCommit('v1')).toBe('c1');
+    expect(await gh.tagCommit('v2')).toBe(undefined);
+    const rel = { upload_url: 'https://uploads.test/repos/o/r/releases/5/assets{?name,label}' };
+    expect(await gh.upload(rel, 'a b.zip', Buffer.from('x'))).toEqual({ id: 1 });
+    expect(seen.at(-1)).toEqual(['POST', 'application/octet-stream']);
+    await expect(gh.publish(5)).rejects.toThrow('PATCH /releases/5: 500');
+  });
+});
+
+describe('the workflow (.github/workflows/desktop.yml)', () => {
+  const yml = readFileSync(new URL('../../.github/workflows/desktop.yml', import.meta.url), 'utf8');
+  /** A job's lines, up to the next job. */
+  const job = (name: string) => {
+    const from = yml.indexOf(`\n  ${name}:\n`);
+    const rest = yml.slice(from + 1);
+    const end = rest.slice(1).search(/\n {2}[a-z]+:\n/);
+    return end < 0 ? rest : rest.slice(0, end + 1);
+  };
+
+  it('has the release checkbox, off by default, and still a tag start', () => {
+    expect(yml).toMatch(/release:\n\s+description: .+\n\s+type: boolean\n\s+default: false/);
+    expect(yml).toContain("tags: ['v*']");
+  });
+
+  it('runs the gate before anything is built, and the release after everything', () => {
+    for (const name of ['package', 'spout', 'vcam']) expect(job(name)).toContain('needs: gate');
+    expect(job('gate')).toContain('node scripts/release.mjs gate');
+    const release = job('release');
+    expect(release).toContain("if: needs.gate.outputs.release == 'true'");
+    expect(release).toContain('needs: [gate, package, spout, vcam]');
+    expect(release).toContain('node scripts/release.mjs publish');
+    // The release is made by the script's calls only (one path for both starts).
+    expect(yml).not.toContain('gh release create');
   });
 });

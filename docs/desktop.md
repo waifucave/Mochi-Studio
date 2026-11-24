@@ -159,13 +159,35 @@ attaches the packages to the run as artifacts for 14 days. Each package job
 also checks the version in the files' properties and starts the package on
 its runner (`scripts/smoke-package.mjs`).
 
-- **Run by hand,** it publishes nothing.
-- **On a version tag** (`v` and `package.json`'s version), its release job
-  publishes a pre-release, once every package and test job has passed.
-  First, `scripts/release.mjs` checks that the tag matches the version,
-  that `CHANGELOG.md` has a section for it, that `docs/releases/` has its
-  notes, and that every package and note is there. The release has the
-  packages, each system's `HOW-TO-OPEN-<system>.txt`, and those notes.
+- **Run by hand,** it publishes nothing, unless **release** is checked.
+- **A release** (a pre-release, with the packages, each system's
+  `HOW-TO-OPEN-<system>.txt`, and the version's notes) starts in one of two
+  ways, which share every step:
+  - **From the Actions page:** Actions → **Desktop packages** → **Run
+    workflow**, on the branch `main`, with **release** checked (and every
+    job, "all"). The release is made with its tag, `v` and `package.json`'s
+    version, at the commit the run is on. Only people with write access to
+    the repository can run a workflow by hand.
+  - **By a version tag** pushed by hand (`v` and `package.json`'s version):
+    the release is made for that tag.
+
+  Before anything is built, the workflow's first job (the gate,
+  `scripts/release.mjs gate`) checks that the run is on `main` (from the
+  Actions page) or that the tag is at the run's commit (a tag), that the
+  version's tag (from the Actions page) and release (either way, drafts
+  included) are not there yet, and that `CHANGELOG.md` has a section for
+  the version and `docs/releases/` its notes. Once every package and test
+  job has passed, the release job checks that every package and note is
+  there, and makes the release as a draft with every file; it checks each
+  file's size and digest on the draft, runs the gate again, and only then
+  publishes it, which creates the tag. Whatever fails before that, the
+  draft is deleted: no tag and no public release are left. If a run ends
+  in the middle (a cancelled run), a draft may be left; the next run's
+  gate names it, to delete on the Releases page.
+
+  The tag a release from the Actions page creates comes from the
+  workflow's own token, so it starts no other run: there is no second run
+  for that tag.
 
 ## Building it yourself
 
